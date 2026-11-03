@@ -35,7 +35,18 @@ for s in 16 32 128 256 512; do
 done
 iconutil -c icns "$iconset" -o "$out/Contents/Resources/AppIcon.icns"
 
-codesign --force --sign - "$out" >/dev/null
+# Sign with your Apple Development identity when there is one: macOS then remembers the
+# microphone and Ghostty permissions across rebuilds. Ad-hoc signing (the fallback) makes
+# every build a new app to macOS, which asks again. CODESIGN_IDENTITY overrides the choice.
+# The identity is picked by its hash: names with non-ASCII letters don't always match.
+identity="${CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk '/Apple Development/ { print $2; exit }')}"
+if [[ -n "$identity" ]]; then
+  codesign --force --sign "$identity" "$out" >/dev/null
+  echo "Signed with $(security find-identity -v -p codesigning | awk -v h="$identity" '$2 == h { sub(/^[^"]*"/, ""); sub(/"$/, ""); print }')"
+else
+  codesign --force --sign - "$out" >/dev/null
+  echo "Signed ad-hoc (macOS will ask for permissions again after each build)"
+fi
 
 if [[ "${1:-}" != "--install" && "${1:-}" != "--open" ]]; then
   echo "Built $out"

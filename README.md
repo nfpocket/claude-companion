@@ -26,7 +26,7 @@ Voice needs an ElevenLabs API key in the login Keychain:
 security add-generic-password -a "$USER" -s elevenlabs -w
 ```
 
-Without it the companion speaks with the Mac voice and voice input is off. The first launch asks for the microphone and for permission to control Ghostty.
+Without it the companion speaks with the Mac voice and voice input is off. macOS asks for the microphone the first time you hold Space, and for permission to control Ghostty the first time the companion talks to it. The build is signed with your Apple Development identity when you have one, so these answers survive rebuilds; with ad-hoc signing (no identity, or `CODESIGN_IDENTITY=-`) macOS asks again after each build.
 
 ## Keys
 

@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 import AppKit
 import ServiceManagement
 import TaskTrackerCore
@@ -330,9 +331,8 @@ final class AppModel: ObservableObject {
 
         hooksInstalled = FileManager.default.fileExists(atPath: Paths.claude.appendingPathComponent("hooks/companion-hook.sh").path)
 
-        if !Recorder.authorized {
-            Recorder.requestAccess { [weak self] ok in self?.micDenied = !ok }
-        }
+        // The microphone is only asked for the first time you hold Space, not at every launch.
+        micDenied = AVCaptureDevice.authorizationStatus(for: .audio) == .denied
 
         every(3) { $0.pollGhostty() }
         every(30) { model in
