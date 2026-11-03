@@ -115,8 +115,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [self] in
             write(window.contentView?.superview ?? window.contentView, "orbit.png")
+            // The detail of a session with menu items, both tabs (for checking the layout).
+            model.select("demo-1")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [self] in
+                write(window.contentView?.superview ?? window.contentView, "check-detail-overview.png")
+                model.detailTab = .menu
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [self] in
+                    write(window.contentView?.superview ?? window.contentView, "check-detail-menu.png")
+                    model.select("demo-1")
+                }
+            }
             model.pillExpanded = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) { [self] in
                 let size = PillView.size(model, metrics)
                 pill.setFrame(NSRect(origin: pill.frame.origin, size: size), display: true)
                 pillHost.layoutSubtreeIfNeeded()

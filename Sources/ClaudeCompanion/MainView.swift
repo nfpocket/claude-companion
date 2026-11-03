@@ -123,24 +123,31 @@ struct OrbitLayout {
     let rx: CGFloat
     let ry: CGFloat
     let roomy: Bool
+    /// A narrow stage: a smaller avatar and no caption under it.
+    let compact: Bool
     private var points: [String: CGPoint] = [:]
     private var widths: [String: CGFloat] = [:]
 
     init(size: CGSize, sessions: [Session], drawer: CGFloat, bottom: CGFloat, leading: CGFloat = 0) {
-        let w = max(400, size.width - drawer - leading)
+        let w = max(320, size.width - drawer - leading)
         let h = max(300, size.height - bottom)
         center = CGPoint(x: leading + w / 2, y: h / 2)
         let n = sessions.count
-        let cardW: CGFloat = n > 8 ? 240 : 290
-        rx = max(170, min(w / 2 - cardW / 2 - 18, 400))
+        // With both side panels open the stage gets narrow: cards shrink and the ellipse
+        // tightens so the side cards stay inside it instead of sliding under the panels.
+        let maxCard: CGFloat = n > 8 ? 240 : 290
+        let cardW = min(maxCard, max(180, (w - 60) / 2.25))
+        let rxToEdge = (w / 2 - 12 - cardW / 2) / 0.87
+        rx = max(100, min(rxToEdge, 400))
         ry = max(110, min(h / 2 - 42 - 16, 230))
-        roomy = ry >= 165
+        compact = w < 640
+        roomy = ry >= 165 && !compact
         let angles = OrbitLayout.slots(n)
         for (i, s) in sessions.enumerated() {
             let a = angles[i] * .pi / 180
             let pull: CGFloat = (s.status == .needs && i == 0) ? 0.84 : 1
             points[s.id] = CGPoint(x: center.x + rx * pull * cos(a), y: center.y + ry * pull * sin(a))
-            widths[s.id] = s.status == .needs ? max(cardW, 320) : cardW
+            widths[s.id] = s.status == .needs ? min(cardW + 30, 320) : cardW
         }
     }
 
@@ -188,7 +195,7 @@ struct StageView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let drawer: CGFloat = model.selectedId != nil ? 360 : 0
+            let drawer: CGFloat = model.selectedId != nil ? model.detailWidth : 0
             let leading: CGFloat = model.showTodos ? model.sidebarWidth : 0
             let lay = OrbitLayout(size: geo.size, sessions: model.sessions, drawer: drawer,
                                   bottom: model.overlayHeight, leading: leading)
@@ -206,7 +213,7 @@ struct StageView: View {
                     LineShape(from: lay.center, to: lay.point(s.id))
                         .stroke(lineColor(s, style), lineWidth: style.highlight != nil ? 2 : 1)
                 }
-                AvatarView(mode: model.avatar, size: 140, level: { model.voiceLevel() })
+                AvatarView(mode: model.avatar, size: lay.compact ? 104 : 140, level: { model.voiceLevel() })
                     .position(lay.center)
                     .onTapGesture { _ = model.escape() }
                 if lay.roomy {
@@ -235,7 +242,7 @@ struct StageView: View {
                 }
             }
             .animation(.spring(response: 0.55, dampingFraction: 0.86), value: model.sessions.map(\.id))
-            .animation(.spring(response: 0.55, dampingFraction: 0.86), value: drawer)
+            .animation(.spring(response: 0.55, dampingFraction: 0.86), value: model.selectedId != nil)
             .animation(.spring(response: 0.55, dampingFraction: 0.86), value: model.overlayHeight)
             .overlay(alignment: .bottomLeading) {
                 if model.overlayHeight == 0 && !model.showTodos { Legend().padding(.leading, 20).padding(.bottom, 16) }
@@ -386,89 +393,127 @@ struct Legend: View {
 
 // MARK: - Detail
 
+/// The session you clicked: where it stands and your last prompt, and in a second tab what's on
+/// the menu for its PRs. Drag the left edge to make it wider.
 struct DetailPanel: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
         if let s = model.selected {
-            VStack(alignment: .leading, spacing: 20) {
+            let menuOpen = model.menuPanel?.openCount(forSession: s.id) ?? 0
+            let hasMenu = model.menuPanel.map { menu in
+                menu.groups(forSession: s.id).contains { g in g.items.contains { !$0.status.isSettled } }
+            } ?? false
+            VStack(alignment: .leading, spacing: 14) {
                 HStack {
                     StatusChip(status: s.status, text: "\(UIText.status(s.status)) · \(timeText(s))")
                     Spacer()
                     Button { model.selectedId = nil } label: {
-                        Image(systemName: "xmark").font(.system(size: 12, weight: .bold)).frame(width: 38, height: 38)
+                        Image(systemName: "xmark").font(.system(size: 12, weight: .bold)).frame(width: 34, height: 34)
                     }
                     .buttonStyle(OutlineButtonStyle())
                     .help(L("Close (Esc)"))
                 }
-                // Long summaries scroll here; they must never make the window grow.
-                ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 20) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(s.title).font(.system(size: 19, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
-                    Text((s.cwd as NSString).abbreviatingWithTildeInPath).font(Theme.mono(12)).foregroundColor(Theme.faint)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(s.title).font(.system(size: 17, weight: .semibold)).lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text((s.cwd as NSString).abbreviatingWithTildeInPath).font(Theme.mono(11)).foregroundColor(Theme.faint)
+                        .lineLimit(1).truncationMode(.middle)
                 }
-                VStack(alignment: .leading, spacing: 8) {
-                    SectionLabel(L("Where it stands"))
-                    if let text = model.summaries[s.id] {
-                        Text(text).font(.system(size: 14)).foregroundColor(Theme.body).lineSpacing(3)
-                            .fixedSize(horizontal: false, vertical: true)
-                    } else {
-                        HStack(spacing: 8) {
-                            ProgressView().controlSize(.small)
-                            Text(s.statusLine).font(.system(size: 14)).foregroundColor(Theme.muted)
+                if hasMenu {
+                    Picker("", selection: $model.detailTab) {
+                        Text(L("Overview")).tag(AppModel.DetailTab.overview)
+                        Text(L("Menu") + (menuOpen > 0 ? "  \(menuOpen)" : "")).tag(AppModel.DetailTab.menu)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+                // Long text scrolls here; it must never make the window grow.
+                ScrollView(.vertical, showsIndicators: false) {
+                    Group {
+                        if hasMenu && model.detailTab == .menu {
+                            SessionMenuSection(session: s, showsLabel: false)
+                        } else {
+                            overview(s)
                         }
                     }
-                }
-                if let p = s.lastPrompt {
-                    VStack(alignment: .leading, spacing: 8) {
-                        SectionLabel(L("Your last prompt") + (s.lastPromptAt.map { " · " + Fmt.ago($0) } ?? ""))
-                        Text(p).font(.system(size: 13)).foregroundColor(Color(hex: 0xC3C5CA)).lineSpacing(2)
-                            .lineLimit(7)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(12)
-                            .background(RoundedRectangle(cornerRadius: 10).fill(Theme.field))
-                    }
-                }
-                SessionMenuSection(session: s)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxHeight: .infinity)
-                VStack(spacing: 10) {
-                    Button { model.focus(s) } label: {
-                        HStack(spacing: 10) {
-                            Text(L("Open in Ghostty"))
-                            if let k = s.shortcut { Text(k).font(Theme.mono(12)).opacity(0.8) }
-                        }
-                        .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(PrimaryButtonStyle())
-                    HStack(spacing: 10) {
-                        HoldToTalk(onDown: { model.pttDown(target: s.id) }, onUp: { model.pttUp() }) { pressed in
-                            Label(pressed ? L("Listening…") : L("Hold to reply"), systemImage: "mic")
-                                .frame(maxWidth: .infinity)
-                                .modifier(SecondaryLook(active: pressed))
-                        }
-                        Button { model.readAloud(s) } label: {
-                            Label(L("Read aloud"), systemImage: "speaker.wave.2").frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(SecondaryButtonStyle())
-                    }
-                    let closing = s.status == .done || s.status == .failed || s.status == .idle
-                    Button { model.propose(closing ? .close : .stop, sessionId: s.id) } label: {
-                        Text(closing ? L("Close session") : L("Stop this turn (sends Esc)")).frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(DangerButtonStyle())
-                }
+                actions(s)
             }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 22)
-            .frame(width: 360)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 18)
+            .frame(width: model.detailWidth)
             .frame(maxHeight: .infinity)
             .background(Theme.panel)
-            .overlay(alignment: .leading) { Rectangle().fill(Theme.line).frame(width: 1) }
+            .overlay(alignment: .leading) {
+                ResizeEdge(width: $model.detailWidth, range: AppModel.detailWidths, growsRight: false)
+            }
             .task(id: s.id) { await model.ensureSummary(s.id) }
+        }
+    }
+
+    private func overview(_ s: Session) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 8) {
+                SectionLabel(L("Where it stands"))
+                if let text = model.summaries[s.id] {
+                    Text(text).font(.system(size: 14)).foregroundColor(Theme.body).lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                } else {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(s.statusLine).font(.system(size: 14)).foregroundColor(Theme.muted)
+                    }
+                }
+            }
+            if let p = s.lastPrompt {
+                VStack(alignment: .leading, spacing: 8) {
+                    SectionLabel(L("Your last prompt") + (s.lastPromptAt.map { " · " + Fmt.ago($0) } ?? ""))
+                    Text(p).font(.system(size: 13)).foregroundColor(Color(hex: 0xC3C5CA)).lineSpacing(2)
+                        .lineLimit(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(Theme.field))
+                        .textSelection(.enabled)
+                }
+            }
+        }
+    }
+
+    /// Open in Ghostty, and a compact row: reply by voice, read aloud, stop or close.
+    private func actions(_ s: Session) -> some View {
+        let closing = s.status == .done || s.status == .failed || s.status == .idle
+        return VStack(spacing: 8) {
+            Button { model.focus(s) } label: {
+                HStack(spacing: 10) {
+                    Text(L("Open in Ghostty"))
+                    if let k = s.shortcut { Text(k).font(Theme.mono(12)).opacity(0.8) }
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(PrimaryButtonStyle(height: 40))
+            HStack(spacing: 8) {
+                HoldToTalk(onDown: { model.pttDown(target: s.id) }, onUp: { model.pttUp() }) { pressed in
+                    Label(pressed ? L("Listening…") : L("Reply"), systemImage: "mic")
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity)
+                        .modifier(CompactLook(active: pressed))
+                }
+                .help(L("Hold to reply"))
+                Button { model.readAloud(s) } label: {
+                    Label(L("Read aloud"), systemImage: "speaker.wave.2").lineLimit(1).frame(maxWidth: .infinity)
+                }
+                .buttonStyle(CompactButtonStyle())
+                Button { model.propose(closing ? .close : .stop, sessionId: s.id) } label: {
+                    Label(closing ? L("Close") : L("Stop"), systemImage: closing ? "xmark.circle" : "stop.circle")
+                        .lineLimit(1).frame(maxWidth: .infinity)
+                }
+                .buttonStyle(CompactButtonStyle(danger: true))
+                .help(closing ? L("Close session") : L("Stop this turn (sends Esc)"))
+            }
         }
     }
 
@@ -477,6 +522,64 @@ struct DetailPanel: View {
         case .done, .failed: return Fmt.ago(s.outcomeAt ?? s.since)
         default: return Fmt.duration(s.since)
         }
+    }
+}
+
+/// A panel edge you can drag to change the panel's width.
+struct ResizeEdge: View {
+    @Binding var width: CGFloat
+    var range: ClosedRange<CGFloat>
+    /// True for a panel on the left (drag right to widen), false for one on the right.
+    var growsRight: Bool
+    @State private var start: CGFloat?
+
+    var body: some View {
+        Rectangle()
+            .fill(start != nil ? Theme.accent.opacity(0.7) : Theme.line)
+            .frame(width: start != nil ? 2 : 1)
+            .frame(maxHeight: .infinity)
+            .overlay {
+                Color.clear
+                    .frame(width: 10)
+                    .contentShape(Rectangle())
+                    .onHover { inside in
+                        if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                    }
+                    .gesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                            .onChanged { g in
+                                let from = start ?? width
+                                start = from
+                                let w = from + (growsRight ? g.translation.width : -g.translation.width)
+                                width = min(max(w, range.lowerBound), range.upperBound)
+                            }
+                            .onEnded { _ in start = nil }
+                    )
+            }
+    }
+}
+
+struct CompactLook: ViewModifier {
+    var active = false
+    var danger = false
+    func body(content: Content) -> some View {
+        content
+            .font(.system(size: 12))
+            .foregroundColor(danger ? Theme.danger : Theme.text)
+            .padding(.horizontal, 8)
+            .frame(height: 34)
+            .background(RoundedRectangle(cornerRadius: 9).fill(active ? Theme.listen.opacity(0.25) : (danger ? Color.clear : Theme.field)))
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(active ? Theme.listen : (danger ? Theme.danger.opacity(0.4) : Theme.border), lineWidth: 1))
+    }
+}
+
+struct CompactButtonStyle: ButtonStyle {
+    var danger = false
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .modifier(CompactLook(danger: danger))
+            .opacity(configuration.isPressed ? 0.75 : 1)
+            .contentShape(Rectangle())
     }
 }
 
@@ -664,7 +767,7 @@ struct OverlayLayer: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
-        let drawer: CGFloat = model.selectedId != nil ? 360 : 0
+        let drawer: CGFloat = model.selectedId != nil ? model.detailWidth : 0
         ZStack {
             VStack {
                 Spacer()
@@ -1152,12 +1255,13 @@ struct HelpView: View {
 
 struct PrimaryButtonStyle: ButtonStyle {
     var destructive = false
+    var height: CGFloat = 44
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 14, weight: .semibold))
             .foregroundColor(Theme.ink)
             .padding(.horizontal, 16)
-            .frame(height: 44)
+            .frame(height: height)
             .background(RoundedRectangle(cornerRadius: 10).fill(destructive ? Color(hex: 0xFF8A80) : Theme.accent))
             .opacity(configuration.isPressed ? 0.8 : 1)
             .contentShape(Rectangle())
@@ -1240,7 +1344,6 @@ struct OutlineButtonStyle: ButtonStyle {
 /// reminders), in a sidebar you can widen by dragging its edge.
 struct TodoPanel: View {
     @EnvironmentObject var model: AppModel
-    @State private var dragStart: CGFloat?
 
     var body: some View {
         Group {
@@ -1250,29 +1353,7 @@ struct TodoPanel: View {
         .frame(maxHeight: .infinity, alignment: .top)
         .background(Theme.panel)
         .overlay(alignment: .trailing) {
-            // The edge: a thin line you can grab.
-            Rectangle()
-                .fill(dragStart != nil ? Theme.accent.opacity(0.7) : Theme.line)
-                .frame(width: dragStart != nil ? 2 : 1)
-                .padding(.trailing, -1)
-                .overlay {
-                    Color.clear
-                        .frame(width: 10)
-                        .contentShape(Rectangle())
-                        .onHover { inside in
-                            if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
-                        }
-                        .gesture(
-                            DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                                .onChanged { g in
-                                    let start = dragStart ?? model.sidebarWidth
-                                    dragStart = start
-                                    let w = start + g.translation.width
-                                    model.sidebarWidth = min(max(w, AppModel.sidebarWidths.lowerBound), AppModel.sidebarWidths.upperBound)
-                                }
-                                .onEnded { _ in dragStart = nil }
-                        )
-                }
+            ResizeEdge(width: $model.sidebarWidth, range: AppModel.sidebarWidths, growsRight: true)
         }
         .environment(\.colorScheme, .dark)
     }
@@ -1283,6 +1364,7 @@ struct TodoPanel: View {
 /// In a session's detail: what's on the menu for the PRs this session opened.
 struct SessionMenuSection: View {
     var session: Session
+    var showsLabel = true
     @EnvironmentObject var model: AppModel
 
     var body: some View {
@@ -1290,11 +1372,11 @@ struct SessionMenuSection: View {
             let groups = menu.groups(forSession: session.id).filter { g in g.items.contains { !$0.status.isSettled } }
             if !groups.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
-                    SectionLabel(L("On the menu"))
+                    if showsLabel { SectionLabel(L("On the menu")) }
                     ForEach(groups, id: \.pr.id) { group in
                         VStack(alignment: .leading, spacing: 8) {
                             HStack(spacing: 6) {
-                                Text("#\(group.pr.number)").font(Theme.mono(12)).foregroundColor(Theme.faint)
+                                Text(verbatim: "#\(group.pr.number)").font(Theme.mono(12)).foregroundColor(Theme.faint)
                                 Text(group.pr.title ?? group.pr.repo).font(.system(size: 12, weight: .semibold)).lineLimit(1)
                                 Spacer(minLength: 0)
                                 if group.items.contains(where: { $0.status == .problem }) {
@@ -1370,6 +1452,7 @@ private struct MenuItemRow: View {
             }
         }
         .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 10).fill(Theme.field))
     }
 }

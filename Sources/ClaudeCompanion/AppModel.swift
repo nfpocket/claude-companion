@@ -61,6 +61,12 @@ final class AppModel: ObservableObject {
     /// The sidebar's width; drag its edge to change it.
     @Published var sidebarWidth: CGFloat { didSet { defaults.set(Double(sidebarWidth), forKey: "sidebarWidth") } }
     static let sidebarWidths: ClosedRange<CGFloat> = 300...640
+    /// The session detail on the right; drag its left edge to change it.
+    @Published var detailWidth: CGFloat { didSet { defaults.set(Double(detailWidth), forKey: "detailWidth") } }
+    static let detailWidths: ClosedRange<CGFloat> = 320...680
+    enum DetailTab { case overview, menu }
+    /// Which tab of the session detail is showing; a newly selected session starts on Overview.
+    @Published var detailTab: DetailTab = .overview
 
     /// The session actions Task Tracker's context menus offer on tasks and menu items.
     var sessionBridge: SessionBridge {
@@ -199,6 +205,8 @@ final class AppModel: ObservableObject {
         showWork = WorkTab(rawValue: defaults.string(forKey: "workTab") ?? "") ?? .tasks
         let w = defaults.object(forKey: "sidebarWidth") as? Double ?? 380
         sidebarWidth = min(max(CGFloat(w), AppModel.sidebarWidths.lowerBound), AppModel.sidebarWidths.upperBound)
+        let dw = defaults.object(forKey: "detailWidth") as? Double ?? 380
+        detailWidth = min(max(CGFloat(dw), AppModel.detailWidths.lowerBound), AppModel.detailWidths.upperBound)
         onlyNeeds = defaults.object(forKey: "onlyNeeds") as? Bool ?? false
         if let t = defaults.object(forKey: "mutedUntil") as? Double { mutedUntil = Date(timeIntervalSince1970: t) }
         voiceId = defaults.string(forKey: "voiceId") ?? AppModel.defaultVoice
@@ -401,6 +409,7 @@ final class AppModel: ObservableObject {
     }
 
     func select(_ id: String?) {
+        if selectedId != id { detailTab = .overview }
         selectedId = (selectedId == id) ? nil : id
         if let id { markSeen(id) }
     }
