@@ -74,21 +74,23 @@ final class TranscriptReader {
     }
 
     private func locate(sessionId: String, cwd: String) -> URL? {
+        if let u = located[sessionId], FileManager.default.fileExists(atPath: u.path) { return u }
+        let u = Self.url(sessionId: sessionId, cwd: cwd)
+        located[sessionId] = u
+        return u
+    }
+
+    /// Where Claude Code keeps a session's transcript: projects/<cwd slug>/<id>.jsonl, or
+    /// wherever the id turns up when the slug doesn't match.
+    static func url(sessionId: String, cwd: String) -> URL? {
         let fm = FileManager.default
-        if let u = located[sessionId], fm.fileExists(atPath: u.path) { return u }
         let slug = String(cwd.map { ($0.isASCII && ($0.isLetter || $0.isNumber)) ? $0 : "-" })
         let direct = Paths.projects.appendingPathComponent(slug).appendingPathComponent("\(sessionId).jsonl")
-        if fm.fileExists(atPath: direct.path) {
-            located[sessionId] = direct
-            return direct
-        }
+        if fm.fileExists(atPath: direct.path) { return direct }
         if let dirs = try? fm.contentsOfDirectory(at: Paths.projects, includingPropertiesForKeys: nil) {
             for d in dirs {
                 let f = d.appendingPathComponent("\(sessionId).jsonl")
-                if fm.fileExists(atPath: f.path) {
-                    located[sessionId] = f
-                    return f
-                }
+                if fm.fileExists(atPath: f.path) { return f }
             }
         }
         return nil

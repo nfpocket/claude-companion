@@ -41,9 +41,11 @@ Without it the companion speaks with the Mac voice and voice input is off. macOS
 | ⌘0 | Show the window |
 | ⌃⌥T | Open or close the task list, from any app |
 
+In the chat field: Return sends, ⇧ Return or ⌥ Return starts a new line, Esc leaves the field (what you typed stays).
+
 In the task list: Return adds a task or renames the selected one, ⌘Return starts a new line, Space marks it done, ⌘1 – ⌘4 move it to In Progress, Todo, Deferred or Done, ⇧⌘N groups the selection into a folder, ⌫ deletes and ⌘Z undoes.
 
-Click a session for where it stands, your last prompt, and buttons to open its tab, reply by voice, read it aloud, or stop it. When the window isn't in front, the companion folds into the notch (or a pill under the menu bar on screens without one); click it for the list. When a session finishes or needs you, the notice drops out of the notch with **Open in Ghostty**: click it to jump to that tab. It shows up even when the companion is muted or "speak when a session finishes" is off.
+Click a session for where it stands, your last prompt, and buttons to open its tab, reply by voice, read it aloud, or stop it. Its **Chat** tab shows the conversation and lets you write to it without leaving the companion (see [Chat](#chat)). When the window isn't in front, the companion folds into the notch (or a pill under the menu bar on screens without one); click it for the list. When a session finishes or needs you, the notice drops out of the notch with **Open in Ghostty**: click it to jump to that tab. It shows up even when the companion is muted or "speak when a session finishes" is off.
 
 ## Talking
 
@@ -62,6 +64,16 @@ Click a session for where it stands, your last prompt, and buttons to open its t
 | “Sprich Deutsch”, “Speak English” | The language the companion speaks |
 
 Sessions are matched loosely, and “number three” means the session in Ghostty tab 3. Follow-ups work: when the companion asks which session you mean, just say “the Outlook one”. Esc or “cancel” stops any countdown. English and German both work.
+
+## Chat
+
+<img src="screenshots/chat.png" width="600" alt="The Chat tab of a session next to the orbit">
+
+The Chat tab of a session is a second view of the session running in Ghostty, not a session of its own. It shows the conversation from the session's transcript: your prompts, Claude's answers with their Markdown, and the tool calls in between folded into one line (click it for each step; failed ones are red). It follows along after each step while Claude works.
+
+What you write there is typed into the session's Ghostty tab and sent with Return, as if you had typed it in the terminal, so slash commands work too. While Claude is busy, Claude Code queues the message and the chat shows it as waiting. Hooks, settings and permissions stay what they are, and you can switch to the terminal at any point.
+
+Permission prompts, questions and plans are answered in Ghostty: when a session waits on you, the chat says what it's asking, and **Answer in Ghostty** opens its tab.
 
 ## Tasks
 
@@ -119,6 +131,7 @@ swift test
 swift build
 .build/debug/ClaudeCompanion --dump                              # what the app sees, without the UI
 .build/debug/ClaudeCompanion --dump --route "what needs me" --summarize
+.build/debug/ClaudeCompanion --chat <transcript.jsonl>           # what the Chat tab shows for a transcript
 scripts/companion-say.sh "summarize everything"                  # act on text as if it were spoken
 COMPANION_DEMO=screenshots .build/debug/ClaudeCompanion          # made-up sessions: writes the screenshots, then quits
 ```

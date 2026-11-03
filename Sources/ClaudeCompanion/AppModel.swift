@@ -64,9 +64,12 @@ final class AppModel: ObservableObject {
     /// The session detail on the right; drag its left edge to change it.
     @Published var detailWidth: CGFloat { didSet { defaults.set(Double(detailWidth), forKey: "detailWidth") } }
     static let detailWidths: ClosedRange<CGFloat> = 320...680
-    enum DetailTab { case overview, menu }
-    /// Which tab of the session detail is showing; a newly selected session starts on Overview.
-    @Published var detailTab: DetailTab = .overview
+    enum DetailTab: String { case overview, chat, menu }
+    /// Which tab of the session detail is showing. Overview and Chat stay when you pick another
+    /// session; the Menu tab belongs to one session, so the next one starts on Overview.
+    @Published var detailTab: DetailTab { didSet { defaults.set(detailTab.rawValue, forKey: "detailTab") } }
+    /// The conversation of the session open in the detail, for the Chat tab.
+    let chat = ChatFeed()
 
     /// The session actions Task Tracker's context menus offer on tasks and menu items.
     var sessionBridge: SessionBridge {
@@ -207,6 +210,8 @@ final class AppModel: ObservableObject {
         sidebarWidth = min(max(CGFloat(w), AppModel.sidebarWidths.lowerBound), AppModel.sidebarWidths.upperBound)
         let dw = defaults.object(forKey: "detailWidth") as? Double ?? 380
         detailWidth = min(max(CGFloat(dw), AppModel.detailWidths.lowerBound), AppModel.detailWidths.upperBound)
+        let tab = DetailTab(rawValue: defaults.string(forKey: "detailTab") ?? "") ?? .overview
+        detailTab = tab == .menu ? .overview : tab
         onlyNeeds = defaults.object(forKey: "onlyNeeds") as? Bool ?? false
         if let t = defaults.object(forKey: "mutedUntil") as? Double { mutedUntil = Date(timeIntervalSince1970: t) }
         voiceId = defaults.string(forKey: "voiceId") ?? AppModel.defaultVoice
@@ -409,7 +414,7 @@ final class AppModel: ObservableObject {
     }
 
     func select(_ id: String?) {
-        if selectedId != id { detailTab = .overview }
+        if selectedId != id, detailTab == .menu { detailTab = .overview }
         selectedId = (selectedId == id) ? nil : id
         if let id { markSeen(id) }
     }
@@ -1129,6 +1134,28 @@ final class AppModel: ObservableObject {
         focus(s)
         flash(ui("Pasted into \(s.spokenName). Edit it, then press Return to send.",
                  "In \(s.spokenName) eingefügt. Bearbeite es und drück dann Return zum Senden."))
+    }
+
+    /// The Chat tab's send: types the message into the session's Ghostty tab and presses Return,
+    /// as if you had typed it there. While Claude is busy, Claude Code queues it.
+    func sendChat(_ text: String, to s: Session) -> Bool {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return false }
+        guard let tty = s.tty else { flash(ui("That session is gone.", "Diese Session gibt es nicht mehr.")); return false }
+        if s.status == .needs {
+            flash(ui("\(s.spokenName) is waiting on you in its tab. Answer that first.",
+                     "\(s.spokenName) wartet in ihrem Tab auf dich. Beantworte das zuerst."))
+            return false
+        }
+        chat.sent(t, session: s.id)
+        ghostty.send(text: t, tty: tty) { [weak self] ok in
+            guard let self, !ok else { return }
+            self.chat.failed(t, session: s.id)
+            self.flash(ui("Couldn’t reach the Ghostty tab of \(s.spokenName).", "Der Ghostty-Tab von \(s.spokenName) war nicht erreichbar."))
+        }
+        markSeen(s.id)
+        store.refreshSoon()
+        return true
     }
 
     /// Starts claude in a new Ghostty tab and puts the todo into its prompt once it's ready.

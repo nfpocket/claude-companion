@@ -393,8 +393,9 @@ struct Legend: View {
 
 // MARK: - Detail
 
-/// The session you clicked: where it stands and your last prompt, and in a second tab what's on
-/// the menu for its PRs. Drag the left edge to make it wider.
+/// The session you clicked, in three tabs: where it stands, its conversation (to chat with it
+/// without leaving the companion), and what's on the menu for its PRs. Drag the left edge to
+/// make it wider.
 struct DetailPanel: View {
     @EnvironmentObject var model: AppModel
 
@@ -404,7 +405,8 @@ struct DetailPanel: View {
             let hasMenu = model.menuPanel.map { menu in
                 menu.groups(forSession: s.id).contains { g in g.items.contains { !$0.status.isSettled } }
             } ?? false
-            VStack(alignment: .leading, spacing: 14) {
+            let tab: AppModel.DetailTab = model.detailTab == .menu && !hasMenu ? .overview : model.detailTab
+            VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     StatusChip(status: s.status, text: "\(UIText.status(s.status)) · \(timeText(s))")
                     Spacer()
@@ -415,32 +417,38 @@ struct DetailPanel: View {
                     .help(L("Close (Esc)"))
                 }
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(s.title).font(.system(size: 17, weight: .semibold)).lineLimit(3)
+                    Text(s.title).font(.system(size: 17, weight: .semibold)).lineLimit(tab == .chat ? 1 : 3)
                         .fixedSize(horizontal: false, vertical: true)
                     Text((s.cwd as NSString).abbreviatingWithTildeInPath).font(Theme.mono(11)).foregroundColor(Theme.faint)
                         .lineLimit(1).truncationMode(.middle)
                 }
-                if hasMenu {
-                    Picker("", selection: $model.detailTab) {
-                        Text(L("Overview")).tag(AppModel.DetailTab.overview)
+                Picker("", selection: Binding(get: { tab }, set: { model.detailTab = $0 })) {
+                    Text(L("Overview")).tag(AppModel.DetailTab.overview)
+                    Text(L("Chat")).tag(AppModel.DetailTab.chat)
+                    if hasMenu {
                         Text(L("Menu") + (menuOpen > 0 ? "  \(menuOpen)" : "")).tag(AppModel.DetailTab.menu)
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
                 }
-                // Long text scrolls here; it must never make the window grow.
-                ScrollView(.vertical, showsIndicators: false) {
-                    Group {
-                        if hasMenu && model.detailTab == .menu {
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                Group {
+                    switch tab {
+                    case .chat:
+                        ChatTab(feed: model.chat, session: s)
+                    case .menu:
+                        // Long text scrolls here; it must never make the window grow.
+                        ScrollView(.vertical, showsIndicators: false) {
                             SessionMenuSection(session: s, showsLabel: false)
-                        } else {
-                            overview(s)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    case .overview:
+                        ScrollView(.vertical, showsIndicators: false) {
+                            overview(s).frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxHeight: .infinity)
-                actions(s)
+                actions(s, compact: tab == .chat)
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 18)
@@ -483,19 +491,30 @@ struct DetailPanel: View {
         }
     }
 
-    /// Open in Ghostty, and a compact row: reply by voice, read aloud, stop or close.
-    private func actions(_ s: Session) -> some View {
+    /// Open in Ghostty, and a compact row: reply by voice, read it aloud, stop or close. Under
+    /// the chat it's one row, with Ghostty as a small button.
+    private func actions(_ s: Session, compact: Bool) -> some View {
         let closing = s.status == .done || s.status == .failed || s.status == .idle
         return VStack(spacing: 8) {
-            Button { model.focus(s) } label: {
-                HStack(spacing: 10) {
-                    Text(L("Open in Ghostty"))
-                    if let k = s.shortcut { Text(k).font(Theme.mono(12)).opacity(0.8) }
+            if !compact {
+                Button { model.focus(s) } label: {
+                    HStack(spacing: 10) {
+                        Text(L("Open in Ghostty"))
+                        if let k = s.shortcut { Text(k).font(Theme.mono(12)).opacity(0.8) }
+                    }
+                    .frame(maxWidth: .infinity)
                 }
-                .frame(maxWidth: .infinity)
+                .buttonStyle(PrimaryButtonStyle(height: 40))
             }
-            .buttonStyle(PrimaryButtonStyle(height: 40))
             HStack(spacing: 8) {
+                if compact {
+                    Button { model.focus(s) } label: {
+                        Label(s.shortcut ?? "Ghostty", systemImage: "terminal")
+                            .lineLimit(1).frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(CompactButtonStyle())
+                    .help(L("Open in Ghostty"))
+                }
                 HoldToTalk(onDown: { model.pttDown(target: s.id) }, onUp: { model.pttUp() }) { pressed in
                     Label(pressed ? L("Listening…") : L("Reply"), systemImage: "mic")
                         .lineLimit(1)
@@ -503,10 +522,12 @@ struct DetailPanel: View {
                         .modifier(CompactLook(active: pressed))
                 }
                 .help(L("Hold to reply"))
-                Button { model.readAloud(s) } label: {
-                    Label(L("Read aloud"), systemImage: "speaker.wave.2").lineLimit(1).frame(maxWidth: .infinity)
+                if !compact {
+                    Button { model.readAloud(s) } label: {
+                        Label(L("Read aloud"), systemImage: "speaker.wave.2").lineLimit(1).frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(CompactButtonStyle())
                 }
-                .buttonStyle(CompactButtonStyle())
                 Button { model.propose(closing ? .close : .stop, sessionId: s.id) } label: {
                     Label(closing ? L("Close") : L("Stop"), systemImage: closing ? "xmark.circle" : "stop.circle")
                         .lineLimit(1).frame(maxWidth: .infinity)

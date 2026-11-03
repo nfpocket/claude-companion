@@ -9,6 +9,49 @@ MainActor.assumeIsolated {
         renderIcon(to: URL(fileURLWithPath: args[i + 1]))
         exit(0)
     }
+    // `ClaudeCompanion --chat <transcript.jsonl>` prints what the Chat tab would show.
+    if let i = args.firstIndex(of: "--chat"), i + 1 < args.count {
+        let t = ChatTranscript(url: URL(fileURLWithPath: args[i + 1]))
+        let start = Date()
+        _ = t.update()
+        print(String(format: "%d items in %.0f ms, earlier: %@, queued: %d", t.items.count,
+                     Date().timeIntervalSince(start) * 1000, t.hasEarlier ? "yes" : "no", t.queued.count))
+        for item in t.items.suffix(Int(args.dropFirst(i + 2).first ?? "") ?? 40) {
+            switch item.kind {
+            case .steps:
+                let failed = item.steps.filter(\.failed).count
+                print("  ⚙ \(item.steps.count) steps\(failed > 0 ? " (\(failed) failed)" : ""): " + item.steps.suffix(3).map(\.text).joined(separator: " | "))
+            default:
+                let text = item.text.prefix(110).replacingOccurrences(of: "\n", with: " ⏎ ")
+                print("\(item.kind) [\(item.blocks.count)b\(item.images > 0 ? " \(item.images)img" : "")]: \(text)")
+            }
+        }
+        exit(0)
+    }
+    // `ClaudeCompanion --chat-selftest <transcript.jsonl>`: reads the file as if it were being
+    // written in chunks (cut mid-line) and checks the chat ends up the same as one full read.
+    if let i = args.firstIndex(of: "--chat-selftest"), i + 1 < args.count,
+       let data = FileManager.default.contents(atPath: args[i + 1]) {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("chat-selftest-\(getpid()).jsonl")
+        let whole = ChatTranscript(url: URL(fileURLWithPath: args[i + 1]), window: UInt64.max / 8)
+        _ = whole.update()
+        let cuts = [data.count / 3, data.count / 2 + 7, data.count * 4 / 5 + 3, data.count]
+        try? data.prefix(cuts[0]).write(to: tmp)
+        let growing = ChatTranscript(url: tmp, window: UInt64.max / 8)
+        _ = growing.update()
+        for k in 1..<cuts.count {
+            let h = try! FileHandle(forWritingTo: tmp)
+            h.seekToEndOfFile()
+            h.write(data[cuts[k - 1]..<cuts[k]])
+            try? h.close()
+            _ = growing.update()
+        }
+        try? FileManager.default.removeItem(at: tmp)
+        func sig(_ t: ChatTranscript) -> [String] { t.items.map { "\($0.kind)|\($0.text)|\($0.steps.map { "\($0.text)\($0.failed)" })" } }
+        let same = sig(whole) == sig(growing)
+        print("whole: \(whole.items.count) items, in chunks: \(growing.items.count) items, same: \(same)")
+        exit(same ? 0 : 1)
+    }
     Demo.prepareTaskData()
     if args.contains("--dump") {
         Task { @MainActor in

@@ -122,11 +122,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 model.detailTab = .menu
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [self] in
                     write(window.contentView?.superview ?? window.contentView, "check-detail-menu.png")
-                    model.select("demo-1")
+                    model.detailTab = .chat
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [self] in
+                        write(window.contentView?.superview ?? window.contentView, "check-detail-chat-needs.png")
+                        model.select("demo-2")
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [self] in
+                            write(window.contentView?.superview ?? window.contentView, "chat.png")
+                            model.detailTab = .overview
+                            model.select("demo-2")
+                        }
+                    }
                 }
             }
             model.pillExpanded = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) { [self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4.2) { [self] in
                 let size = PillView.size(model, metrics)
                 pill.setFrame(NSRect(origin: pill.frame.origin, size: size), display: true)
                 pillHost.layoutSubtreeIfNeeded()
@@ -247,6 +256,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         guard e.type == .keyDown else { return e }
         if e.keyCode == 53 { // Esc
+            // In the chat field, Esc first leaves the field (the draft stays).
+            if e.window === window, window.firstResponder is ChatTextView, model.pending == nil, !model.speaking {
+                window.makeFirstResponder(nil)
+                return nil
+            }
             return model.escape() ? nil : e
         }
         if e.modifierFlags.contains(.command), !e.modifierFlags.contains(.shift),

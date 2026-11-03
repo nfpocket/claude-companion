@@ -139,8 +139,9 @@ final class Ghostty {
         """)
     }
 
-    /// Types text into the session as if pasted, then optionally presses Enter.
-    func send(text: String, tty: String, submit: Bool = true) {
+    /// Types text into the session as if pasted, then optionally presses Enter. `done` says
+    /// whether the terminal was found.
+    func send(text: String, tty: String, submit: Bool = true, done: ((Bool) -> Void)? = nil) {
         let enter = submit ? "delay 0.2\n      send key \"enter\" to term" : ""
         async("""
         tell application "Ghostty"
@@ -153,7 +154,7 @@ final class Ghostty {
           end repeat
           return "missing"
         end tell
-        """)
+        """) { r in done?(r == "ok") }
     }
 
     func sendKey(_ key: String, modifiers: String? = nil, tty: String) {

@@ -87,3 +87,62 @@ extension Demo {
         }
     }
 }
+
+extension Demo {
+    /// A made-up conversation for the Chat tab.
+    static func chat(_ sessionId: String) -> [ChatItem] {
+        let now = Date()
+        var items: [ChatItem] = []
+        func you(_ t: String, _ minutes: Double) {
+            items.append(ChatItem(id: "\(sessionId)-\(items.count)", kind: .you, text: t, at: now.addingTimeInterval(-minutes * 60)))
+        }
+        func claude(_ t: String) {
+            var i = ChatItem(id: "\(sessionId)-\(items.count)", kind: .claude, text: t, at: now)
+            i.blocks = MD.blocks(t)
+            items.append(i)
+        }
+        func steps(_ list: [(String, [String: Any])]) {
+            let s = list.enumerated().map { n, step in
+                ChatStep(id: "\(sessionId)-\(items.count)-\(n)", tool: step.0, text: Activity.describe(step.0, step.1),
+                         detail: ChatTranscript.detail(step.0, step.1))
+            }
+            items.append(ChatItem(id: "\(sessionId)-\(items.count)", kind: .steps, text: "", at: now, steps: s))
+        }
+        switch sessionId {
+        case "demo-1":
+            you("Split the payment step out of the checkout into its own component. Saved cards have to keep working.", 9)
+            claude("I'll look at how the checkout steps are wired first.")
+            steps([("Read", ["file_path": "/Users/demo/Code/shop-web/src/checkout/Checkout.tsx"]),
+                   ("Grep", ["pattern": "usePaymentMethod"]),
+                   ("Read", ["file_path": "/Users/demo/Code/shop-web/src/checkout/usePaymentMethod.ts"])])
+            claude("The payment step lives inside `Checkout.tsx` today, together with the saved-card picker. I'll move both into `PaymentStep.tsx` and keep `usePaymentMethod` as it is, so saved cards take the same path as before.")
+            steps([("Write", ["file_path": "/Users/demo/Code/shop-web/src/checkout/PaymentStep.tsx"]),
+                   ("Edit", ["file_path": "/Users/demo/Code/shop-web/src/checkout/Checkout.tsx"]),
+                   ("Bash", ["command": "npm run build", "description": "Build the app to catch type errors"])])
+        case "demo-2":
+            you("Write the release notes for 2.4 from the PRs merged since 2.3.", 14)
+            steps([("Bash", ["command": "gh pr list --state merged --search \"merged:>2026-10-01\" --limit 50", "description": "List the PRs merged since 2.3"]),
+                   ("Read", ["file_path": "/Users/demo/Code/docs/CHANGELOG.md"]),
+                   ("Edit", ["file_path": "/Users/demo/Code/docs/CHANGELOG.md"])])
+            claude("""
+            The notes for **2.4** are in `CHANGELOG.md`:
+
+            ## 2.4
+            - Saved cards at checkout
+            - Search on the docs site is about twice as fast
+            - Fixed: the order email could arrive twice
+
+            I left out the internal refactors. Should I open a PR?
+            """)
+            you("Yes, open one", 8)
+            steps([("Bash", ["command": "git switch -c release-notes-2.4", "description": "Create a branch for the notes"]),
+                   ("Bash", ["command": "git commit -am \"Release notes for 2.4\"", "description": "Commit the notes"]),
+                   ("Bash", ["command": "gh pr create --fill", "description": "Open the pull request"])])
+            claude("Opened **acme/docs#88**. One check is on the menu: whether the notes render on the docs site.")
+        default:
+            you("Let's get started.", 5)
+            claude("On it.")
+        }
+        return items
+    }
+}
