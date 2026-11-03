@@ -29,8 +29,28 @@ public final class TaskTrackerController: NSObject {
     private var statusItem: NSStatusItem?
     private var hotKey: HotKey?
     private var keyMonitor: Any?
+    private var sidebarOutline: TaskOutlineController?
+    private let sidebarPanel = PanelState()
 
     public override init() { super.init() }
+
+    /// Session actions for the context menus of tasks and menu items.
+    public var sessionBridge: SessionBridge? {
+        didSet {
+            outline.sessionBridge = sessionBridge
+            sidebarOutline?.sessionBridge = sessionBridge
+            menu.sessionBridge = sessionBridge
+        }
+    }
+
+    /// The whole Task Tracker (its tabs, the list with sections and folders, the menu) for a
+    /// sidebar. Same store and menu as the popover, its own selection.
+    public func makeSidebar() -> AnyView {
+        let outline = sidebarOutline ?? TaskOutlineController(store: store)
+        outline.sessionBridge = sessionBridge
+        sidebarOutline = outline
+        return AnyView(ContentView(store: store, panel: sidebarPanel, outline: outline, menu: menu, embedded: true))
+    }
 
     /// Whether ⌃⌥T could be registered (another app may own it).
     public var hotKeyRegistered: Bool { hotKey != nil }
@@ -76,10 +96,18 @@ public final class TaskTrackerController: NSObject {
     }
 
     private func handle(_ key: CommandKey, inWindow windowNumber: Int) -> Bool {
-        guard let window = popover.contentViewController?.view.window, window.windowNumber == windowNumber else { return false }
+        guard let window = NSApp.window(withWindowNumber: windowNumber) else { return false }
+        let target: TaskOutlineController
+        if window === popover.contentViewController?.view.window {
+            target = outline
+        } else if let sidebar = sidebarOutline, window === sidebar.outlineView.window {
+            target = sidebar
+        } else {
+            return false
+        }
         return switch key {
-        case .paste: outline.pasteImageIfNeeded(firstResponder: window.firstResponder)
-        case .lineBreak: outline.insertLineBreakIfNeeded(firstResponder: window.firstResponder)
+        case .paste: target.pasteImageIfNeeded(firstResponder: window.firstResponder)
+        case .lineBreak: target.insertLineBreakIfNeeded(firstResponder: window.firstResponder)
         }
     }
 

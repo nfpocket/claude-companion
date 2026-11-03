@@ -47,6 +47,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         model.tasks = taskTracker.store
         model.menuPanel = taskTracker.menu
         model.onShowTask = { [weak self] id in self?.taskTracker.show(id) }
+        taskTracker.sessionBridge = model.sessionBridge
+        model.taskSidebar = taskTracker.makeSidebar()
         if Demo.on { taskTracker.menu.reload() } else { taskTracker.start() }
         model.onOpenWindow = { [weak self] in self?.showWindow() }
         model.onUILanguageChange = { [weak self] in self?.buildMenu() }
@@ -119,7 +121,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 pill.setFrame(NSRect(origin: pill.frame.origin, size: size), display: true)
                 pillHost.layoutSubtreeIfNeeded()
                 write(pillHost, "pill.png")
-                NSApp.terminate(nil)
+                // An announcement, as it drops out of the notch with its Open button.
+                model.pillExpanded = false
+                model.demoAnnounceDone("demo-2")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [self] in
+                    let size = PillView.size(model, metrics)
+                    pill.setFrame(NSRect(origin: pill.frame.origin, size: size), display: true)
+                    pillHost.layoutSubtreeIfNeeded()
+                    write(pillHost, "announcement.png")
+                    NSApp.terminate(nil)
+                }
             }
         }
     }
@@ -201,8 +212,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         model.pttUp()
     }
 
-    /// Typing in a text field (the new-session prompt) keeps Space as a normal key.
-    private var editingText: Bool { window.firstResponder is NSTextView }
+    /// Typing in a text field, or working in the task list (Space marks a task done there),
+    /// keeps Space as a normal key.
+    private var editingText: Bool {
+        window.firstResponder is NSTextView || window.firstResponder is NSTableView
+    }
 
     private func handleKey(_ e: NSEvent) -> NSEvent? {
         // Space held in the orbit window is push-to-talk, like ⌥ Space everywhere else.

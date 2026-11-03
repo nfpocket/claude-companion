@@ -43,7 +43,7 @@ Without it the companion speaks with the Mac voice and voice input is off. The f
 
 In the task list: Return adds a task or renames the selected one, ⌘Return starts a new line, Space marks it done, ⌘1 – ⌘4 move it to In Progress, Todo, Deferred or Done, ⇧⌘N groups the selection into a folder, ⌫ deletes and ⌘Z undoes.
 
-Click a session for where it stands, your last prompt, and buttons to open its tab, reply by voice, read it aloud, or stop it. When the window isn't in front, the companion folds into the notch (or a pill under the menu bar on screens without one); click it for the list.
+Click a session for where it stands, your last prompt, and buttons to open its tab, reply by voice, read it aloud, or stop it. When the window isn't in front, the companion folds into the notch (or a pill under the menu bar on screens without one); click it for the list. When a session finishes or needs you, the notice drops out of the notch with **Open in Ghostty**: click it to jump to that tab. It shows up even when the companion is muted or "speak when a session finishes" is off.
 
 ## Talking
 
@@ -65,12 +65,12 @@ Sessions are matched loosely, and “number three” means the session in Ghostt
 
 ## Tasks
 
-The ☑ in the menu bar (or ⌃⌥T) opens the task list: In Progress, Todo, Deferred and Done, with folders, links, images and reminders. The same list sits on the left of the orbit window, behind the Tasks button; add tasks there or in the menu bar, check them off, or move them along. Right-click a task:
+The ☑ in the menu bar (or ⌃⌥T) opens the task list: In Progress, Todo, Deferred and Done, with folders, links, images and reminders. The same list, with the Menu tab, sits on the left of the orbit window behind the Tasks button; drag its edge to make it wider. Right-click a task, a folder or a menu item:
 
 - **Start a new session with it** opens `claude` in a new Ghostty tab in the folder you pick and puts the task into its prompt once it's ready.
 - **Paste into a session** puts the task into an open session's prompt and brings its tab forward.
 
-Nothing is sent: edit it in Ghostty, then press Return. Images attached to a task are added as file paths, so Claude can read them. Double-click a task to open it in the full list.
+Nothing is sent: edit it in Ghostty, then press Return. Images attached to a task are added as file paths, so Claude can read them; a menu item brings where to check it, why, and its PR.
 
 ## The menu
 

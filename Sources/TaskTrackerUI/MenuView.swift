@@ -264,6 +264,10 @@ private struct ItemRow: View {
 
     /// Right-click: the same decisions as the buttons, plus Dismiss and Delete for every item.
     @ViewBuilder private var contextMenu: some View {
+        if let bridge = panel.sessionBridge {
+            SessionBridgeMenus(bridge: bridge, content: item.sessionText(pr: pr))
+            Divider()
+        }
         switch item.kind {
         case .check:
             if item.openURL != nil {

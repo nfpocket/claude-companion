@@ -189,11 +189,14 @@ struct StageView: View {
     var body: some View {
         GeometryReader { geo in
             let drawer: CGFloat = model.selectedId != nil ? 360 : 0
-            let leading: CGFloat = model.showTodos ? TodoPanel.width : 0
+            let leading: CGFloat = model.showTodos ? model.sidebarWidth : 0
             let lay = OrbitLayout(size: geo.size, sessions: model.sessions, drawer: drawer,
                                   bottom: model.overlayHeight, leading: leading)
             ZStack(alignment: .topLeading) {
+                // Clicking the background takes focus off the task list, so Space talks again.
                 Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { NSApp.keyWindow?.makeFirstResponder(nil) }
                 Ellipse()
                     .stroke(Theme.ring, style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
                     .frame(width: lay.rx * 2, height: lay.ry * 2)
@@ -680,7 +683,7 @@ struct OverlayLayer: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             .padding(.trailing, drawer)
-            .padding(.leading, model.showTodos ? TodoPanel.width : 0)
+            .padding(.leading, model.showTodos ? model.sidebarWidth : 0)
 
             if let p = model.pending, p.kind == .newSession {
                 Color.black.opacity(0.6)
@@ -898,18 +901,67 @@ struct CaptionsPanel: View {
                         .foregroundColor(now ? Theme.text : (spoken ? Theme.faint : Theme.muted))
                         .lineLimit(now ? 4 : 1)
                         .fixedSize(horizontal: false, vertical: now)
+                        .contentShape(Rectangle())
+                        .onTapGesture { if now, let s = model.currentCaptionSessions.first { model.open(fromCaption: s) } }
                 }
             }
             HStack(spacing: 8) {
+                CaptionOpenButtons(targets: model.currentCaptionSessions, pill: false)
                 Spacer()
-                Button(L("Skip")) { model.speaker.skip() }.buttonStyle(ChipButtonStyle())
+                if model.speaking {
+                    Button(L("Skip")) { model.speaker.skip() }.buttonStyle(ChipButtonStyle())
+                }
                 Button { model.stopSpeaking() } label: {
-                    HStack(spacing: 8) { Text(L("Stop talking")); Text(L("Esc")).font(Theme.mono()).foregroundColor(Theme.muted) }
+                    HStack(spacing: 8) {
+                        Text(model.speaking ? L("Stop talking") : L("Close"))
+                        Text(L("Esc")).font(Theme.mono()).foregroundColor(Theme.muted)
+                    }
                 }
                 .buttonStyle(ChipButtonStyle())
             }
         }
         .modifier(PanelBackground())
+    }
+}
+
+/// Under a caption about sessions: jump to their Ghostty tabs.
+struct CaptionOpenButtons: View {
+    var targets: [Session]
+    var pill: Bool
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        if targets.count == 1, let s = targets.first {
+            button(s, title: L("Open in Ghostty") + (s.shortcut.map { "  " + $0 } ?? ""))
+        } else {
+            ForEach(targets.prefix(3)) { s in
+                button(s, title: s.shortcut ?? String(s.spokenName.prefix(14)))
+                    .help(s.title)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func button(_ s: Session, title: String) -> some View {
+        if pill {
+            Button(title) { model.open(fromCaption: s) }.buttonStyle(PillButtonStyle(primary: true)).focusable(false)
+        } else {
+            Button(title) { model.open(fromCaption: s) }.buttonStyle(PrimaryChipStyle())
+        }
+    }
+}
+
+struct PrimaryChipStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundColor(Theme.ink)
+            .padding(.horizontal, 14)
+            .frame(height: 40)
+            .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Theme.accent))
+            .opacity(configuration.isPressed ? 0.8 : 1)
+            .contentShape(Rectangle())
+            .focusEffectDisabled()
     }
 }
 
@@ -1184,194 +1236,45 @@ struct OutlineButtonStyle: ButtonStyle {
 
 // MARK: - Tasks and the menu
 
-/// Task Tracker inside the orbit window: the open tasks, and the menu of checks and ideas
-/// agents left on their PRs. The ⌃⌥T popover shows the same store and menu.
+/// Task Tracker's own list and menu (tabs, all four sections, folders, drag and drop, images,
+/// reminders), in a sidebar you can widen by dragging its edge.
 struct TodoPanel: View {
-    static let width: CGFloat = 330
     @EnvironmentObject var model: AppModel
+    @State private var dragStart: CGFloat?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Picker("", selection: $model.showWork) {
-                Text(L("Tasks") + countText(model.todos.count)).tag(AppModel.WorkTab.tasks)
-                Text(L("Menu") + countText(model.menuPanel?.openCount ?? 0)).tag(AppModel.WorkTab.menu)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(.horizontal, 14)
-            .padding(.top, 14)
-            .padding(.bottom, 10)
-            switch model.showWork {
-            case .tasks: TaskList()
-            case .menu:
-                if let menu = model.menuPanel {
-                    MenuView(panel: menu)
-                        .onAppear { menu.didOpen() }
-                }
-            }
+        Group {
+            if let sidebar = model.taskSidebar { sidebar } else { Color.clear }
         }
-        .frame(width: TodoPanel.width)
+        .frame(width: model.sidebarWidth)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(Theme.panel)
-        .overlay(alignment: .trailing) { Rectangle().fill(Theme.line).frame(width: 1) }
-    }
-
-    private func countText(_ n: Int) -> String { n > 0 ? "  \(n)" : "" }
-}
-
-private struct TaskList: View {
-    @EnvironmentObject var model: AppModel
-    @State private var draft = ""
-    @FocusState private var adding: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "plus").font(.system(size: 12, weight: .semibold)).foregroundColor(Theme.muted)
-                TextField(L("Add a task"), text: $draft)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13))
-                    .focused($adding)
-                    .onSubmit {
-                        model.addTask(draft)
-                        draft = ""
-                        adding = true
-                    }
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 36)
-            .background(RoundedRectangle(cornerRadius: 9).fill(Theme.bg))
-            .overlay(RoundedRectangle(cornerRadius: 9).stroke(adding ? Theme.accent.opacity(0.6) : Theme.border, lineWidth: 1))
-            .padding(.horizontal, 14)
-            .padding(.bottom, 6)
-
-            if let problem = model.tasks?.problem {
-                Text(problem).font(.system(size: 12)).foregroundColor(SessionStatus.needs.color)
-                    .padding(.horizontal, 18).padding(.vertical, 6)
-            }
-            let todos = model.todos
-            if todos.isEmpty {
-                Text(L("No open tasks. Add one above, or with ⌃⌥T from any app."))
-                    .font(.system(size: 13))
-                    .foregroundColor(Theme.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 8)
-            } else {
-                ScrollView(.vertical, showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        stage(todos, .inProgress, L("In Progress"))
-                        stage(todos, .todo, L("Todo"))
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 10)
+        .overlay(alignment: .trailing) {
+            // The edge: a thin line you can grab.
+            Rectangle()
+                .fill(dragStart != nil ? Theme.accent.opacity(0.7) : Theme.line)
+                .frame(width: dragStart != nil ? 2 : 1)
+                .padding(.trailing, -1)
+                .overlay {
+                    Color.clear
+                        .frame(width: 10)
+                        .contentShape(Rectangle())
+                        .onHover { inside in
+                            if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                        }
+                        .gesture(
+                            DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                                .onChanged { g in
+                                    let start = dragStart ?? model.sidebarWidth
+                                    dragStart = start
+                                    let w = start + g.translation.width
+                                    model.sidebarWidth = min(max(w, AppModel.sidebarWidths.lowerBound), AppModel.sidebarWidths.upperBound)
+                                }
+                                .onEnded { _ in dragStart = nil }
+                        )
                 }
-            }
-            Spacer(minLength: 0)
-            Text(L("Right-click a task to start a session with it or paste it into one. Nothing is sent until you press Return."))
-                .font(.system(size: 11))
-                .foregroundColor(Theme.faint)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 12)
         }
-    }
-
-    @ViewBuilder
-    private func stage(_ todos: [Todo], _ stage: Todo.Stage, _ title: String) -> some View {
-        let items = todos.filter { $0.stage == stage }
-        if !items.isEmpty {
-            SectionLabel(title)
-                .padding(.horizontal, 8)
-                .padding(.top, 10)
-                .padding(.bottom, 2)
-            ForEach(items) { TodoRow(todo: $0) }
-        }
-    }
-}
-
-struct TodoRow: View {
-    var todo: Todo
-    @EnvironmentObject var model: AppModel
-    @State private var hover = false
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Button { model.setStage(todo, .done) } label: {
-                Circle()
-                    .strokeBorder(todo.stage == .inProgress ? SessionStatus.working.color : Theme.faint, lineWidth: 1.5)
-                    .background(Circle().fill(todo.stage == .inProgress ? SessionStatus.working.color.opacity(0.3) : .clear))
-                    .overlay {
-                        if hover { Image(systemName: "checkmark").font(.system(size: 8, weight: .heavy)).foregroundColor(Theme.muted) }
-                    }
-                    .frame(width: 15, height: 15)
-            }
-            .buttonStyle(.plain)
-            .padding(.top, 1)
-            .help(L("Mark done"))
-            VStack(alignment: .leading, spacing: 3) {
-                Text(todo.title).font(.system(size: 13)).lineLimit(3).fixedSize(horizontal: false, vertical: true)
-                if let meta = meta {
-                    Text(meta).font(.system(size: 11)).foregroundColor(Theme.faint).lineLimit(1)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
-        .background(RoundedRectangle(cornerRadius: 9).fill(hover ? Theme.raised : Color.clear))
-        .contentShape(Rectangle())
-        .onHover { hover = $0 }
-        .onTapGesture(count: 2) { model.openInTaskList(todo) }
-        .help(todo.title)
-        .contextMenu {
-            Menu(L("Start a new session with it")) {
-                ForEach(model.folders.prefix(12), id: \.self) { f in
-                    Button((f as NSString).lastPathComponent + "   " + (f as NSString).abbreviatingWithTildeInPath) {
-                        model.startSession(with: todo, in: f)
-                    }
-                }
-                Divider()
-                Button(L("Choose a folder…")) { chooseFolder() }
-            }
-            Menu(L("Paste into a session")) {
-                if model.sessions.isEmpty { Text(L("No sessions open")) }
-                ForEach(model.sessions) { s in
-                    Button((s.shortcut.map { $0 + "  " } ?? "") + s.title) { model.paste(todo, into: s) }
-                        .disabled(s.tty == nil || s.status == .needs)
-                }
-            }
-            Divider()
-            if todo.stage == .todo {
-                Button(L("Move to In Progress")) { model.setStage(todo, .inProgress) }
-            } else {
-                Button(L("Move to Todo")) { model.setStage(todo, .todo) }
-            }
-            Button(L("Defer")) { model.setStage(todo, .deferred) }
-            Button(L("Mark done")) { model.setStage(todo, .done) }
-            Divider()
-            Button(L("Open in the task list (⌃⌥T)")) { model.openInTaskList(todo) }
-            Button(L("Copy")) { model.copyToClipboard(todo.pasteText) }
-        }
-    }
-
-    private var meta: String? {
-        var parts: [String] = []
-        if let f = todo.folder { parts.append(f) }
-        if !todo.images.isEmpty {
-            parts.append(ui(todo.images.count == 1 ? "1 image" : "\(todo.images.count) images",
-                            todo.images.count == 1 ? "1 Bild" : "\(todo.images.count) Bilder"))
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-
-    private func chooseFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.directoryURL = model.folders.first.map { URL(fileURLWithPath: $0) }
-        if panel.runModal() == .OK, let url = panel.url { model.startSession(with: todo, in: url.path) }
+        .environment(\.colorScheme, .dark)
     }
 }
 

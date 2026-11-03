@@ -24,6 +24,8 @@ public final class MenuPanel {
     }
 
     @ObservationIgnored let actions: MenuActions
+    /// Set by the host app: session actions on every item's context menu.
+    @ObservationIgnored public var sessionBridge: SessionBridge?
     /// The popover's: ⌘Z takes back a status change or a delete.
     @ObservationIgnored weak var undoManager: UndoManager?
     @ObservationIgnored private var watcher: DispatchSourceFileSystemObject?

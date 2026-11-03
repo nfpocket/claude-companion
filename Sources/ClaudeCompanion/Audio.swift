@@ -26,6 +26,8 @@ final class Speaker: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegat
     var voiceIdDE = "87AwpS6yC86wa2WglbsK"
     var model = "eleven_flash_v2_5"
     var useSystemVoice = false
+    /// Demo mode: go through the motions (captions, avatar) without making a sound.
+    var silent = false
 
     private let el: ElevenLabs
     private var queue: [(Utterance, Task<Data?, Never>)] = []
@@ -96,6 +98,13 @@ final class Speaker: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegat
         current = u
         let gen = generation
         onStart?(u)
+        if silent {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                guard let self, gen == self.generation, self.current?.id == u.id else { return }
+                self.finishCurrent()
+            }
+            return
+        }
         Task { @MainActor [weak self] in
             let data = await task.value
             guard let self, gen == self.generation, self.current?.id == u.id else { return }

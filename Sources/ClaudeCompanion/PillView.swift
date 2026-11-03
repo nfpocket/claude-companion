@@ -163,15 +163,24 @@ struct PillView: View {
         case .pending:
             if let p = model.pending { pendingView(p) }
         case .caption:
+            let targets = model.currentCaptionSessions
             VStack(alignment: .leading, spacing: 10) {
                 if let i = model.captionIndex, model.captions.indices.contains(i) {
                     Text(model.captions[i].text).font(.system(size: 13)).lineLimit(3)
                         .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .onTapGesture { if let s = targets.first { model.open(fromCaption: s) } }
+                        .help(targets.isEmpty ? "" : L("Click to open it in Ghostty"))
                 }
                 HStack(spacing: 8) {
+                    CaptionOpenButtons(targets: targets, pill: true)
                     Spacer()
-                    Button(L("Skip")) { model.speaker.skip() }.buttonStyle(PillButtonStyle()).focusable(false)
-                    Button(L("Stop")) { model.stopSpeaking() }.buttonStyle(PillButtonStyle()).focusable(false)
+                    if model.speaking {
+                        Button(L("Skip")) { model.speaker.skip() }.buttonStyle(PillButtonStyle()).focusable(false)
+                    }
+                    Button(model.speaking ? L("Stop") : L("Close")) { model.stopSpeaking() }
+                        .buttonStyle(PillButtonStyle()).focusable(false)
                 }
             }
         }

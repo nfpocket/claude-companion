@@ -77,6 +77,8 @@ final class TaskOutlineController: NSObject {
     @ObservationIgnored let scrollView = NSScrollView()
     @ObservationIgnored let outlineView = TaskOutlineView()
     @ObservationIgnored var onCancel: () -> Void = {}
+    /// Set by the host app: adds "Start a new session with it" and "Paste into a session".
+    @ObservationIgnored var sessionBridge: SessionBridge?
     /// A task to select the next time the popover opens, e.g. one whose reminder was clicked.
     @ObservationIgnored var selectOnOpen: UUID?
     /// Where copy and paste go. Tests swap in a private one.
@@ -956,6 +958,21 @@ extension TaskOutlineController: NSTextFieldDelegate {
 
 // MARK: - Context menu
 
+extension TaskOutlineController {
+    /// The clicked tasks (a folder counts as its tasks) as one prompt: titles, then image paths.
+    func sessionText(for ids: [UUID]) -> String {
+        var tasks: [TaskItem] = []
+        for id in ids {
+            if let task = store.list.task(id) { tasks.append(task) }
+            else if let folder = store.list.folder(id) { tasks.append(contentsOf: folder.tasks) }
+        }
+        return tasks.map { task in
+            let images = task.images.map { store.imageURL($0).path }
+            return ([task.title] + images).joined(separator: "\n")
+        }.joined(separator: "\n\n")
+    }
+}
+
 extension TaskOutlineController: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
@@ -971,6 +988,10 @@ extension TaskOutlineController: NSMenuDelegate {
         }
 
         let ids = clickedIDs()
+        if let bridge = sessionBridge {
+            for item in bridge.menuItems({ [weak self] in self?.sessionText(for: ids) ?? "" }) { menu.addItem(item) }
+            menu.addItem(.separator())
+        }
         let statuses = Set(ids.compactMap(status(of:)))
         for (offset, status) in TaskStatus.allCases.enumerated() where statuses != [status] {
             menu.addItem(ActionMenuItem("Move to \(status.title)", key: "\(offset + 1)") { [weak self] in

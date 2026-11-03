@@ -55,6 +55,29 @@ final class AppModel: ObservableObject {
     var todos: [Todo] { tasks?.openTodos ?? [] }
     var todosAvailable: Bool { tasks != nil }
     @Published var showTodos: Bool { didSet { defaults.set(showTodos, forKey: "showTodos") } }
+    /// Task Tracker's own list and menu, for the sidebar (set by the app delegate).
+    var taskSidebar: AnyView?
+    /// The sidebar's width; drag its edge to change it.
+    @Published var sidebarWidth: CGFloat { didSet { defaults.set(Double(sidebarWidth), forKey: "sidebarWidth") } }
+    static let sidebarWidths: ClosedRange<CGFloat> = 300...640
+
+    /// The session actions Task Tracker's context menus offer on tasks and menu items.
+    var sessionBridge: SessionBridge {
+        SessionBridge(
+            text: { L($0) },
+            folders: { [weak self] in self?.folders ?? [] },
+            sessions: { [weak self] in
+                (self?.sessions ?? []).map { s in
+                    SessionBridge.Target(id: s.id, title: (s.shortcut.map { $0 + "  " } ?? "") + s.title,
+                                         enabled: s.tty != nil && s.status != .needs)
+                }
+            },
+            start: { [weak self] text, folder in self?.startSession(text: text, in: folder) },
+            paste: { [weak self] text, id in
+                guard let self, let s = self.session(id) else { return }
+                self.paste(text: text, into: s)
+            })
+    }
     /// Which half of the left panel is showing: tasks or the menu of checks and ideas.
     enum WorkTab: String { case tasks, menu }
     @Published var showWork: WorkTab { didSet { defaults.set(showWork.rawValue, forKey: "workTab") } }
@@ -143,11 +166,15 @@ final class AppModel: ObservableObject {
     private var seenAt: [String: Date] = [:]
     private var known: [String: SessionStatus] = [:]
     private var primed = false
+    /// Set once the session store has reported: a status seen before that is not a change.
+    private var storeReported = false
     private var summaryKeys: [String: String] = [:]
     private var diskSummaries: [String: [String: String]] = [:]
     private var summaryQueue: [String] = []
     private var summaryWorker: Task<Void, Never>?
     private var lastSpoken: (text: String, lang: Lang)?
+    /// Sessions each queued announcement is about, by its utterance tag.
+    private var announced: [String: [String]] = [:]
     /// The language you last spoke to me in; my own replies use it when the setting is automatic.
     private var replyLang: Lang = .en
 
@@ -169,6 +196,8 @@ final class AppModel: ObservableObject {
         speakOnDone = defaults.object(forKey: "speakOnDone") as? Bool ?? true
         showTodos = defaults.object(forKey: "showTodos") as? Bool ?? true
         showWork = WorkTab(rawValue: defaults.string(forKey: "workTab") ?? "") ?? .tasks
+        let w = defaults.object(forKey: "sidebarWidth") as? Double ?? 380
+        sidebarWidth = min(max(CGFloat(w), AppModel.sidebarWidths.lowerBound), AppModel.sidebarWidths.upperBound)
         onlyNeeds = defaults.object(forKey: "onlyNeeds") as? Bool ?? false
         if let t = defaults.object(forKey: "mutedUntil") as? Double { mutedUntil = Date(timeIntervalSince1970: t) }
         voiceId = defaults.string(forKey: "voiceId") ?? AppModel.defaultVoice
@@ -265,9 +294,16 @@ final class AppModel: ObservableObject {
     // MARK: start
 
     func start() {
+        speaker.onStart = { [weak self] u in self?.utteranceStarted(u) }
+        speaker.onFinish = { [weak self] u in self?.utteranceFinished(u) }
+        speaker.onIdle = { [weak self] in self?.speakerIdle() }
+        speaker.onSpent = { [weak self] n in self?.spent(n) }
+        speaker.onError = { [weak self] e in self?.speechFailed(e) }
         if Demo.on {
+            speaker.silent = true
             store.onUpdate = { [weak self] list in
                 self?.raw = list
+                self?.storeReported = true
                 self?.publish()
             }
             store.start()
@@ -280,14 +316,10 @@ final class AppModel: ObservableObject {
             useSystemVoice(true)
             flash(ui("No ElevenLabs key in the Keychain (item “elevenlabs”), so I’m using the Mac voice.", "Kein ElevenLabs-Schlüssel im Schlüsselbund (Eintrag „elevenlabs“), deshalb nutze ich die Mac-Stimme."))
         }
-        speaker.onStart = { [weak self] u in self?.utteranceStarted(u) }
-        speaker.onFinish = { [weak self] u in self?.utteranceFinished(u) }
-        speaker.onIdle = { [weak self] in self?.speakerIdle() }
-        speaker.onSpent = { [weak self] n in self?.spent(n) }
-        speaker.onError = { [weak self] e in self?.speechFailed(e) }
 
         store.onUpdate = { [weak self] list in
             self?.raw = list
+            self?.storeReported = true
             self?.publish()
         }
         store.start()
@@ -389,28 +421,60 @@ final class AppModel: ObservableObject {
         }
         let ids = Set(list.map(\.id))
         known = known.filter { ids.contains($0.key) }
-        primed = true
+        primed = storeReported
         announce(needs: needs, done: done, failed: failed)
     }
 
     private func announce(needs: [Session], done: [Session], failed: [Session]) {
-        guard !isMuted, !listening else { return }
+        guard !listening else { return }
         // Don't tell you about the tab you're looking at.
         let watching: (Session) -> Bool = { s in Ghostty.isFrontmost && s.tty != nil && s.tty == self.snap.frontTTY }
         let n = needs.filter { !watching($0) }
         let f = failed.filter { !watching($0) }
-        let d = (speakOnDone && !onlyNeeds) ? done.filter { !watching($0) } : []
+        let d = done.filter { !watching($0) }
         guard !(n.isEmpty && f.isEmpty && d.isEmpty) else { return }
-        if !n.isEmpty { NSSound(named: "Glass")?.play() }
-        // Each session is announced in its own language, one utterance per language.
+        if !n.isEmpty && !isMuted { NSSound(named: "Glass")?.play() }
+        let speakDone = speakOnDone && !onlyNeeds && !isMuted
+        // Each session is announced in its own language, one utterance per language. What isn't
+        // spoken (muted, or "speak when done" off) still shows up, so it can be clicked.
         for lang in [Lang.en, .de] {
-            var lines: [String] = []
             let ln = n.filter { self.lang(for: $0) == lang }, lf = f.filter { self.lang(for: $0) == lang }
             let ld = d.filter { self.lang(for: $0) == lang }
-            if !ln.isEmpty { lines.append(Phrase.needsYou(ln.map(\.spokenName), lang)) }
-            if !lf.isEmpty { lines.append(Phrase.failed(lf.map(\.spokenName), lang)) }
-            if !ld.isEmpty { lines.append(Phrase.done(ld.map(\.spokenName), lang)) }
-            if !lines.isEmpty { say(lines.joined(separator: " "), tag: "announce", lang: lang) }
+            var voiced: [String] = [], quiet: [String] = []
+            var voicedIds: [String] = [], quietIds: [String] = []
+            if !ln.isEmpty {
+                if isMuted { quiet.append(Phrase.needsYou(ln.map(\.spokenName), lang)); quietIds += ln.map(\.id) }
+                else { voiced.append(Phrase.needsYou(ln.map(\.spokenName), lang)); voicedIds += ln.map(\.id) }
+            }
+            if !lf.isEmpty {
+                if isMuted { quiet.append(Phrase.failed(lf.map(\.spokenName), lang)); quietIds += lf.map(\.id) }
+                else { voiced.append(Phrase.failed(lf.map(\.spokenName), lang)); voicedIds += lf.map(\.id) }
+            }
+            if !ld.isEmpty {
+                if speakDone { voiced.append(Phrase.done(ld.map(\.spokenName), lang)); voicedIds += ld.map(\.id) }
+                else { quiet.append(Phrase.done(ld.map(\.spokenName), lang)); quietIds += ld.map(\.id) }
+            }
+            if !voiced.isEmpty {
+                // Remember who it's about, so its caption can jump to that tab.
+                let tag = "announce-" + UUID().uuidString
+                announced[tag] = voicedIds
+                say(voiced.joined(separator: " "), tag: tag, lang: lang)
+            } else if !quiet.isEmpty {
+                showQuietly(quiet.joined(separator: " "), sessions: quietIds)
+            }
+        }
+    }
+
+    /// A notice without a voice: the caption (with its Open button) for a few seconds.
+    private func showQuietly(_ text: String, sessions ids: [String]) {
+        guard !speaker.isBusy else { return } // never cover a briefing that is playing
+        let c = Caption(text: text, sessionIds: ids)
+        captions = [c]
+        captionIndex = 0
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12) { [weak self] in
+            guard let self, self.captions.first?.id == c.id, !self.speaker.isBusy else { return }
+            self.captions = []
+            self.captionIndex = nil
         }
     }
 
@@ -535,8 +599,10 @@ final class AppModel: ObservableObject {
             for id in captions[i].sessionIds { markSeen(id, publish: false) }
             publish()
         } else {
-            // Everything spoken is also shown, so it can be read when the sound is off.
-            captions = [Caption(text: u.text, sessionIds: [])]
+            // Everything spoken is also shown, so it can be read when the sound is off; an
+            // announcement's caption knows its sessions, so a click on it opens their tab.
+            let ids = u.tag.flatMap { announced.removeValue(forKey: $0) } ?? []
+            captions = [Caption(text: u.text, sessionIds: ids)]
             captionIndex = 0
         }
     }
@@ -547,7 +613,9 @@ final class AppModel: ObservableObject {
         speaking = false
         guard !captions.isEmpty else { return }
         let ids = captions.map(\.id)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+        // A caption you can click to jump to a tab stays up a while after the voice stops.
+        let linger: Double = captions.contains { !$0.sessionIds.isEmpty } ? 12 : 2.5
+        DispatchQueue.main.asyncAfter(deadline: .now() + linger) { [weak self] in
             guard let self, !self.speaker.isBusy, self.captions.map(\.id) == ids else { return }
             self.captions = []
             self.captionIndex = nil
@@ -660,6 +728,24 @@ final class AppModel: ObservableObject {
         captions = [c]
         selectedId = needs.first?.id ?? failed.first?.id
         say(c.text, tag: c.id.uuidString)
+    }
+
+    /// Demo screenshots: the announcement a finished session gets.
+    func demoAnnounceDone(_ id: String) {
+        guard Demo.on, let s = session(id) else { return }
+        announce(needs: [], done: [s], failed: [])
+    }
+
+    /// The sessions the caption on screen is about, for its Open buttons.
+    var currentCaptionSessions: [Session] {
+        guard let i = captionIndex, captions.indices.contains(i) else { return [] }
+        return captions[i].sessionIds.compactMap { session($0) }
+    }
+
+    /// Clicked a caption or its Open button: go to that session's Ghostty tab.
+    func open(fromCaption s: Session) {
+        stopSpeaking()
+        focus(s)
     }
 
     func readAloud(_ s: Session) {
@@ -995,18 +1081,6 @@ final class AppModel: ObservableObject {
 
     // MARK: tasks
 
-    func addTask(_ text: String) {
-        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty else { return }
-        tasks?.add(t, to: .section(.todo))
-    }
-
-    func setStage(_ todo: Todo, _ status: TaskStatus) {
-        tasks?.setStatus([todo.taskID], to: status)
-    }
-
-    func openInTaskList(_ todo: Todo) { onShowTask?(todo.taskID) }
-
     /// Spoken: the checks agents left for you, newest PR first.
     func askMenu() {
         stopSpeaking()
@@ -1034,7 +1108,7 @@ final class AppModel: ObservableObject {
 
     /// Puts a todo into a session's prompt without sending it, and brings its tab forward
     /// so it can be edited first.
-    func paste(_ todo: Todo, into s: Session) {
+    func paste(text: String, into s: Session) {
         guard let tty = s.tty else { flash(ui("That session is gone.", "Diese Session gibt es nicht mehr.")); return }
         if s.status == .needs {
             flash(ui("\(s.spokenName) is waiting on a prompt in its tab. Answer that first.",
@@ -1042,24 +1116,24 @@ final class AppModel: ObservableObject {
             focus(s)
             return
         }
-        ghostty.send(text: todo.pasteText, tty: tty, submit: false)
+        ghostty.send(text: text, tty: tty, submit: false)
         focus(s)
         flash(ui("Pasted into \(s.spokenName). Edit it, then press Return to send.",
                  "In \(s.spokenName) eingefügt. Bearbeite es und drück dann Return zum Senden."))
     }
 
     /// Starts claude in a new Ghostty tab and puts the todo into its prompt once it's ready.
-    func startSession(with todo: Todo, in folder: String) {
+    func startSession(text: String, in folder: String) {
         let name = (folder as NSString).lastPathComponent
         ghostty.newTab(cwd: folder, input: "claude") { [weak self] tty in
             guard let self else { return }
             guard let tty else {
-                self.copyToClipboard(todo.pasteText)
+                self.copyToClipboard(text)
                 self.flash(ui("Started claude in \(name). The todo is on the clipboard.",
                               "claude in \(name) gestartet. Das Todo liegt in der Zwischenablage."))
                 return
             }
-            self.pendingPastes[tty] = (todo.pasteText, Date())
+            self.pendingPastes[tty] = (text, Date())
             self.flash(ui("Starting a session in \(name). The todo goes in as soon as it’s ready.",
                           "Starte eine Session in \(name). Das Todo kommt rein, sobald sie bereit ist."))
             self.store.refreshSoon()

@@ -12,6 +12,9 @@ struct ContentView: View {
     let panel: PanelState
     let outline: TaskOutlineController
     let menu: MenuPanel
+    /// In the companion's sidebar instead of the popover: any size, and no grabbing focus
+    /// (Space there means push-to-talk unless you're typing).
+    var embedded = false
 
     @Environment(\.undoManager) private var undoManager
     @State private var draft = ""
@@ -44,7 +47,8 @@ struct ContentView: View {
             Divider()
             footer
         }
-        .frame(width: 420, height: 620)
+        .frame(width: embedded ? nil : 420, height: embedded ? nil : 620)
+        .frame(maxWidth: embedded ? .infinity : nil, maxHeight: embedded ? .infinity : nil)
         .onAppear(perform: didOpen)
         .onChange(of: panel.openCount, didOpen)
         .onChange(of: outline.addFieldFocusRequests) { addFieldFocused = true }
@@ -52,7 +56,7 @@ struct ContentView: View {
             // Back on the list: start fresh, as when the popover opens.
             if tab == .tasks {
                 outline.prepareForOpen()
-                addFieldFocused = true
+                if !embedded { addFieldFocused = true }
             }
         }
         .onExitCommand { panel.close() }
@@ -63,7 +67,7 @@ struct ContentView: View {
         menu.undoManager = undoManager
         outline.prepareForOpen()
         menu.didOpen()
-        if tab == .tasks { addFieldFocused = true }
+        if tab == .tasks, !embedded { addFieldFocused = true }
     }
 
     // MARK: - Tabs
@@ -134,7 +138,7 @@ struct ContentView: View {
                     NSWorkspace.shared.activateFileViewerSelecting([store.fileURL])
                 }
                 Divider()
-                Button("Quit Task Tracker") { NSApp.terminate(nil) }
+                Button("Quit Claude Companion") { NSApp.terminate(nil) }
                     .keyboardShortcut("q")
             } label: {
                 Image(systemName: "ellipsis.circle")
