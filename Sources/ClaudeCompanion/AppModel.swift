@@ -1,6 +1,8 @@
 import SwiftUI
 import AppKit
 import ServiceManagement
+import TaskTrackerCore
+import TaskTrackerUI
 
 enum AvatarMode { case idle, listening, thinking, speaking }
 
@@ -43,11 +45,19 @@ final class AppModel: ObservableObject {
     @Published private(set) var captionIndex: Int?
     @Published var pending: PendingAction?
 
-    // MARK: todos (from Task Tracker)
-    @Published private(set) var todos: [Todo] = []
-    @Published private(set) var todosAvailable = false
+    // MARK: tasks and the menu (Task Tracker, built in)
+    /// Set by the app delegate from Task Tracker's controller. Both are @Observable, so views
+    /// that read them update when the list or menu.json changes, here or in the ⌃⌥T popover.
+    var tasks: TaskStore?
+    var menuPanel: MenuPanel?
+    /// Opens the ⌃⌥T list with a task selected, for everything the orbit window doesn't edit.
+    var onShowTask: ((UUID) -> Void)?
+    var todos: [Todo] { tasks?.openTodos ?? [] }
+    var todosAvailable: Bool { tasks != nil }
     @Published var showTodos: Bool { didSet { defaults.set(showTodos, forKey: "showTodos") } }
-    let todoStore = TodoStore()
+    /// Which half of the left panel is showing: tasks or the menu of checks and ideas.
+    enum WorkTab: String { case tasks, menu }
+    @Published var showWork: WorkTab { didSet { defaults.set(showWork.rawValue, forKey: "workTab") } }
     /// Todos waiting for a freshly started session to be ready, by that session's tty.
     private var pendingPastes: [String: (text: String, since: Date)] = [:]
 
@@ -158,6 +168,7 @@ final class AppModel: ObservableObject {
         self.speaker = Speaker(el: el)
         speakOnDone = defaults.object(forKey: "speakOnDone") as? Bool ?? true
         showTodos = defaults.object(forKey: "showTodos") as? Bool ?? true
+        showWork = WorkTab(rawValue: defaults.string(forKey: "workTab") ?? "") ?? .tasks
         onlyNeeds = defaults.object(forKey: "onlyNeeds") as? Bool ?? false
         if let t = defaults.object(forKey: "mutedUntil") as? Double { mutedUntil = Date(timeIntervalSince1970: t) }
         voiceId = defaults.string(forKey: "voiceId") ?? AppModel.defaultVoice
@@ -183,6 +194,7 @@ final class AppModel: ObservableObject {
             seenAt = [:]
             diskSummaries = [:]
             showTodos = true
+            showWork = .tasks
         }
     }
 
@@ -253,11 +265,6 @@ final class AppModel: ObservableObject {
     // MARK: start
 
     func start() {
-        todoStore.onUpdate = { [weak self] list, available in
-            self?.todos = list
-            self?.todosAvailable = available
-        }
-        todoStore.start()
         if Demo.on {
             store.onUpdate = { [weak self] list in
                 self?.raw = list
@@ -800,6 +807,9 @@ final class AppModel: ObservableObject {
         }
         if Self.matches(t, #"^(repeat( that)?|say (that|it) again|again|nochmal|wiederhol(e|en)?( das)?)$"#) { return Intent(action: .repeat) }
         if Self.matches(t, #"^(help|what can i say|hilfe)$"#) { return Intent(action: .help) }
+        if Self.matches(t, #"^(what can i (check|test)( now)?|what'?s on the menu|anything to check|was kann ich (prüfen|testen)( gerade)?|was steht auf dem menü)$"#) {
+            return Intent(action: .menu)
+        }
         if Self.matches(t, #"^((please )?speak german|(sprich|rede) (bitte )?deutsch|auf deutsch( bitte)?)$"#) {
             var i = Intent(action: .setLanguage); i.language = "de"; return i
         }
@@ -867,6 +877,8 @@ final class AppModel: ObservableObject {
             say(languageSetting == .auto
                 ? tr("Okay. I’ll speak each session’s own language.", "Okay. Ich spreche jetzt die Sprache der jeweiligen Session.")
                 : tr("Okay. I’ll speak English from now on.", "Okay. Ab jetzt spreche ich Deutsch."))
+        case .menu:
+            askMenu()
         case .help:
             showHelp = true
         case .cancel:
@@ -979,6 +991,43 @@ final class AppModel: ObservableObject {
             break
         }
         store.refreshSoon()
+    }
+
+    // MARK: tasks
+
+    func addTask(_ text: String) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        tasks?.add(t, to: .section(.todo))
+    }
+
+    func setStage(_ todo: Todo, _ status: TaskStatus) {
+        tasks?.setStatus([todo.taskID], to: status)
+    }
+
+    func openInTaskList(_ todo: Todo) { onShowTask?(todo.taskID) }
+
+    /// Spoken: the checks agents left for you, newest PR first.
+    func askMenu() {
+        stopSpeaking()
+        let l = replyLanguage
+        guard let menu = menuPanel else { return }
+        let open = menu.file.visibleGroups().flatMap { g in g.items.filter { $0.status == .open && $0.kind == .check } }
+        let ideas = menu.file.openIdeas
+        guard !open.isEmpty else {
+            say(l == .de ? "Gerade gibt es nichts zu prüfen." + (ideas > 0 ? " \(Phrase.number(ideas, .de)) Ideen warten." : "")
+                         : "Nothing to check right now." + (ideas > 0 ? " \(Phrase.number(ideas, .en)) ideas are waiting." : ""))
+            return
+        }
+        var parts = [l == .de ? (open.count == 1 ? "Eine Sache zum Prüfen." : "\(Phrase.number(open.count, .de)) Sachen zum Prüfen.")
+                              : (open.count == 1 ? "One thing to check." : "\(Phrase.number(open.count, .en)) things to check.")]
+        for item in open.prefix(3) { parts.append(item.text.hasSuffix(".") ? item.text : item.text + ".") }
+        if open.count > 3 { parts.append(l == .de ? "Und \(open.count - 3) weitere im Menü." : "And \(open.count - 3) more on the menu.") }
+        showWork = .menu
+        showTodos = true
+        let c = Caption(text: parts.joined(separator: " "), sessionIds: sessions.filter { menu.openCount(forSession: $0.id) > 0 }.map(\.id))
+        captions = [c]
+        say(c.text, tag: c.id.uuidString)
     }
 
     // MARK: todos into sessions

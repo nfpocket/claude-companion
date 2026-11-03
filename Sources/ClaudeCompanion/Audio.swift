@@ -245,6 +245,11 @@ final class HotKey {
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
         ]
         InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
+            // Task Tracker's ⌃⌥T goes through the same app target: only act on our own key.
+            var id = EventHotKeyID()
+            let read = GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                                         nil, MemoryLayout<EventHotKeyID>.size, nil, &id)
+            guard read == noErr, id.signature == OSType(0x4343_4D50) else { return OSStatus(eventNotHandledErr) }
             let kind = GetEventKind(event)
             DispatchQueue.main.async {
                 if kind == UInt32(kEventHotKeyPressed) { HotKey.current?.onPress?() } else { HotKey.current?.onRelease?() }

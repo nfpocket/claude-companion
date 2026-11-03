@@ -6,7 +6,7 @@ struct Intent {
         case askNeeds = "ask_needs", summarizeAll = "summarize_all", summarizeOne = "summarize_one"
         case sendPrompt = "send_prompt", focus, stop, close, newSession = "new_session"
         case mute, unmute, onlyNeeds = "only_needs", allAnnouncements = "all_announcements"
-        case setLanguage = "set_language"
+        case setLanguage = "set_language", menu
         case `repeat`, help, cancel, unknown
     }
     var action: Action
@@ -145,6 +145,7 @@ final class Brain {
         - all_announcements: tell me about everything again, including finished sessions
         - repeat: say that again
         - help: what can I say
+        - menu: what can I check / test now, what's on the menu (checks and ideas agents left on their PRs)
         - set_language: speak German / sprich Englisch / match each session's language \
           (language = "de", "en" or "auto")
         - cancel: never mind / cancel
@@ -180,7 +181,7 @@ final class Brain {
 
         let schema = #"""
         {"type":"object","properties":{
-          "action":{"type":"string","enum":["ask_needs","summarize_all","summarize_one","send_prompt","focus","stop","close","new_session","mute","unmute","only_needs","all_announcements","set_language","repeat","help","cancel","unknown"]},
+          "action":{"type":"string","enum":["ask_needs","summarize_all","summarize_one","send_prompt","focus","stop","close","new_session","mute","unmute","only_needs","all_announcements","set_language","menu","repeat","help","cancel","unknown"]},
           "session":{"type":"string"},
           "prompt":{"type":"string"},
           "folder":{"type":"string"},

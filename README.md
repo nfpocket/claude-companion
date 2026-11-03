@@ -2,6 +2,8 @@
 
 A companion for the Claude Code sessions you run in Ghostty. Every open session sits around a small avatar, and whatever needs you floats to the top. The companion says out loud when a session finishes or waits on you, and you can talk to it: hold Space, ask what needs you, have a session summarized, send one a prompt, or start a new one. Ghostty stays the terminal underneath.
 
+It also has [Task Tracker](https://github.com/nfpocket/task-tracker) built in: your task list in the menu bar (⌃⌥T), and the menu of checks and ideas agents leave on their PRs, shown on the session that opened each PR.
+
 <p>
   <img src="screenshots/orbit.png" width="600" alt="The orbit window: sessions around the avatar, todos from Task Tracker on the left">
   <img src="screenshots/pill.png" width="220" alt="The companion opened from the notch">
@@ -16,7 +18,7 @@ Needs macOS 14, Swift 6, Ghostty 1.3 or later and Claude Code.
 ./scripts/install-hooks.sh
 ```
 
-The first builds the app, copies it to `~/Applications` and starts it. Without `--install` it only builds `build/Claude Companion.app`. The second lets the app see when a session is waiting on you (see [Setup](#setup)).
+The first builds the app, copies it to `~/Applications` and starts it, and installs the `menu` command to `~/.local/bin`. Without `--install` it only builds `build/Claude Companion.app`. If the standalone Task Tracker app is running, it is quit: the companion has it built in and uses the same data. The second script lets the app see when a session is waiting on you (see [Setup](#setup)).
 
 Voice needs an ElevenLabs API key in the login Keychain:
 
@@ -37,6 +39,9 @@ Without it the companion speaks with the Mac voice and voice input is off. The f
 | Return | Do the proposed action now |
 | ⌘1 – ⌘9 | Open that Ghostty tab |
 | ⌘0 | Show the window |
+| ⌃⌥T | Open or close the task list, from any app |
+
+In the task list: Return adds a task or renames the selected one, ⌘Return starts a new line, Space marks it done, ⌘1 – ⌘4 move it to In Progress, Todo, Deferred or Done, ⇧⌘N groups the selection into a folder, ⌫ deletes and ⌘Z undoes.
 
 Click a session for where it stands, your last prompt, and buttons to open its tab, reply by voice, read it aloud, or stop it. When the window isn't in front, the companion folds into the notch (or a pill under the menu bar on screens without one); click it for the list.
 
@@ -53,18 +58,43 @@ Click a session for where it stands, your last prompt, and buttons to open its t
 | “Stop the deploy one” | Presses Esc in its tab, after 2.5 s |
 | “Close the Outlook session” | Types `/exit` and closes the tab, after you confirm |
 | “Only tell me when something needs me”, “Be quiet for an hour”, “You can talk again” | Announcements |
+| “What can I check?” | Reads out the open checks on the menu |
 | “Sprich Deutsch”, “Speak English” | The language the companion speaks |
 
 Sessions are matched loosely, and “number three” means the session in Ghostty tab 3. Follow-ups work: when the companion asks which session you mean, just say “the Outlook one”. Esc or “cancel” stops any countdown. English and German both work.
 
-## Todos
+## Tasks
 
-Open tasks from [Task Tracker](https://github.com/nfpocket/task-tracker) (In Progress and Todo) show on the left; the Todos button in the header hides them. Add tasks in Task Tracker as usual, from the menu bar. Right-click one:
+The ☑ in the menu bar (or ⌃⌥T) opens the task list: In Progress, Todo, Deferred and Done, with folders, links, images and reminders. The same list sits on the left of the orbit window, behind the Tasks button; add tasks there or in the menu bar, check them off, or move them along. Right-click a task:
 
 - **Start a new session with it** opens `claude` in a new Ghostty tab in the folder you pick and puts the task into its prompt once it's ready.
 - **Paste into a session** puts the task into an open session's prompt and brings its tab forward.
 
-Nothing is sent: edit it in Ghostty, then press Return. Images attached to a task are added as file paths, so Claude can read them. The companion only reads Task Tracker's file, never writes it.
+Nothing is sent: edit it in Ghostty, then press Return. Images attached to a task are added as file paths, so Claude can read them. Double-click a task to open it in the full list.
+
+## The menu
+
+While an agent builds something, the menu holds what you can do by hand in the meantime: the checks the agent couldn't verify itself, and the ideas it left out of scope, grouped by PR.
+
+- **Agents fill it.** A Claude Code hook notices `gh pr create` and tells the agent to add its checks and ideas with `menu add`. It also remembers the session, so a session card shows a ☑ badge with what's open on its PRs, and its detail lists them.
+- **You decide each item.** A check: **Works**, or **Problem…**, which becomes a comment on the PR while it's open and a new issue once it's merged. An idea: **Make issue**, **Later** or **Dismiss**. The Menu tab next to Tasks has every PR, with right-click to delete and ⌘Z to take back a change.
+- **Fix in its session** sends the problems on a PR to the session that built it, in Ghostty: typed into its tab if it's still open, resumed in a new tab if not.
+
+`menu help` lists every command. Add the hook to `~/.claude/settings.json`:
+
+```json
+"PostToolUse": [
+  { "matcher": "Bash", "hooks": [{ "type": "command", "command": "~/.local/bin/menu hook", "timeout": 15 }] }
+]
+```
+
+To put new issues on a project board, add the repo to `menu-config.json` next to the data file:
+
+```json
+{ "projects": { "owner/repo": {
+  "owner": "owner", "number": 4, "projectId": "PVT_…", "statusField": "PVTSSF_…", "statusOption": "<Backlog option id>"
+} } }
+```
 
 ## Language
 
@@ -80,14 +110,17 @@ To see when a session waits on you (a permission prompt, a question, a plan), `.
 
 ## Data
 
-Summaries are saved to `~/Library/Application Support/ClaudeCompanion/summaries.json`, spoken audio to `~/Library/Caches/ClaudeCompanion/tts`, hook events to `~/.claude/companion/events`, settings to `defaults read local.claude-companion`.
+Tasks are saved to `~/Library/Application Support/TaskTracker/tasks.json`, images to the `attachments` folder next to it, the menu to `menu.json` (the same files the standalone Task Tracker used). Summaries are saved to `~/Library/Application Support/ClaudeCompanion/summaries.json`, spoken audio to `~/Library/Caches/ClaudeCompanion/tts`, hook events to `~/.claude/companion/events`, settings to `defaults read local.claude-companion`.
 
 ## Development
 
 ```sh
+swift test
 swift build
 .build/debug/ClaudeCompanion --dump                              # what the app sees, without the UI
 .build/debug/ClaudeCompanion --dump --route "what needs me" --summarize
 scripts/companion-say.sh "summarize everything"                  # act on text as if it were spoken
 COMPANION_DEMO=screenshots .build/debug/ClaudeCompanion          # made-up sessions: writes the screenshots, then quits
 ```
+
+`Sources/TaskTrackerCore`, `TaskTrackerUI` and `MenuCLI` are Task Tracker, moved in from its repo; `TASKTRACKER_DATA=/tmp/tasks.json` points them at a test list.

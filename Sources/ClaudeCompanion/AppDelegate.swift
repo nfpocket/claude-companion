@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Combine
+import TaskTrackerUI
 
 /// A borderless panel that sits in the notch, above the menu bar, on every Space.
 final class PillPanel: NSPanel {
@@ -29,6 +30,8 @@ final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var model: AppModel!
+    /// Task Tracker, built in: the ☑ menu bar item with its ⌃⌥T popover, reminders and the menu.
+    private let taskTracker = TaskTrackerController()
     private var window: NSWindow!
     private var pill: PillPanel!
     private var pillHost: FirstClickHostingView<AnyView>!
@@ -41,6 +44,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         model = AppModel()
+        model.tasks = taskTracker.store
+        model.menuPanel = taskTracker.menu
+        model.onShowTask = { [weak self] id in self?.taskTracker.show(id) }
+        if Demo.on { taskTracker.menu.reload() } else { taskTracker.start() }
         model.onOpenWindow = { [weak self] in self?.showWindow() }
         model.onUILanguageChange = { [weak self] in self?.buildMenu() }
         buildMenu()

@@ -1,4 +1,6 @@
 import SwiftUI
+import TaskTrackerCore
+import TaskTrackerUI
 
 // MARK: - Window root
 
@@ -63,15 +65,16 @@ struct HeaderBar: View {
             Button { model.showTodos.toggle() } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "checklist")
-                    Text(L("Todos"))
-                    if !model.todos.isEmpty {
-                        Text("\(model.todos.count)").font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.muted)
+                    Text(L("Tasks"))
+                    let n = model.todos.count + (model.menuPanel?.openCount ?? 0)
+                    if n > 0 {
+                        Text("\(n)").font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.muted)
                     }
                 }
                 .font(.system(size: 13))
             }
             .buttonStyle(ChromeButtonStyle())
-            .help(L("Show or hide your todos from Task Tracker"))
+            .help(L("Show or hide your tasks and the menu"))
             Picker("", selection: $model.uiLanguage) {
                 Text("EN").tag(Lang.en)
                 Text("DE").tag(Lang.de)
@@ -213,7 +216,8 @@ struct StageView: View {
                 }
                 ForEach(model.sessions) { s in
                     let style = cardStyle(s)
-                    SessionCard(session: s, selected: model.selectedId == s.id,
+                    SessionCard(session: s, menuCount: model.menuPanel?.openCount(forSession: s.id) ?? 0,
+                                selected: model.selectedId == s.id,
                                 highlight: style.highlight, dimmed: style.dimmed) { model.select(s.id) }
                         .frame(width: lay.width(s.id))
                         .position(lay.point(s.id))
@@ -290,6 +294,7 @@ struct StageView: View {
 
 struct SessionCard: View {
     var session: Session
+    var menuCount: Int = 0
     var selected: Bool
     var highlight: Color?
     var dimmed: Bool
@@ -303,7 +308,20 @@ struct SessionCard: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(session.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                     Text(session.statusLine).font(.system(size: 12)).foregroundColor(session.status.color).lineLimit(1)
-                    Text(session.metaLine).font(Theme.mono()).foregroundColor(Theme.faint).lineLimit(1)
+                    HStack(spacing: 6) {
+                        Text(session.metaLine).font(Theme.mono()).foregroundColor(Theme.faint).lineLimit(1)
+                        if menuCount > 0 {
+                            HStack(spacing: 3) {
+                                Image(systemName: "checklist").font(.system(size: 9, weight: .bold))
+                                Text("\(menuCount)").font(.system(size: 10, weight: .bold))
+                            }
+                            .foregroundColor(SessionStatus.done.color)
+                            .padding(.horizontal, 5)
+                            .frame(height: 16)
+                            .background(Capsule().fill(SessionStatus.done.color.opacity(0.15)))
+                            .help(ui("\(menuCount) open on the menu", "\(menuCount) offen im Menü"))
+                        }
+                    }
                 }
                 Spacer(minLength: 0)
                 if let k = session.shortcut {
@@ -409,6 +427,7 @@ struct DetailPanel: View {
                             .background(RoundedRectangle(cornerRadius: 10).fill(Theme.field))
                     }
                 }
+                SessionMenuSection(session: s)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -1163,54 +1182,104 @@ struct OutlineButtonStyle: ButtonStyle {
     }
 }
 
-// MARK: - Todos
+// MARK: - Tasks and the menu
 
-/// Open tasks from Task Tracker. Right-click one to start a session with it or paste it into one.
+/// Task Tracker inside the orbit window: the open tasks, and the menu of checks and ideas
+/// agents left on their PRs. The ⌃⌥T popover shows the same store and menu.
 struct TodoPanel: View {
-    static let width: CGFloat = 300
+    static let width: CGFloat = 330
     @EnvironmentObject var model: AppModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(L("Todos")).font(.system(size: 15, weight: .semibold))
-                Spacer()
-                Text(L("from Task Tracker")).font(.system(size: 11)).foregroundColor(Theme.faint)
+            Picker("", selection: $model.showWork) {
+                Text(L("Tasks") + countText(model.todos.count)).tag(AppModel.WorkTab.tasks)
+                Text(L("Menu") + countText(model.menuPanel?.openCount ?? 0)).tag(AppModel.WorkTab.menu)
             }
-            .padding(.horizontal, 18)
-            .padding(.top, 18)
-            .padding(.bottom, 8)
-            if !model.todosAvailable {
-                note(L("Task Tracker isn’t set up on this Mac. Its tasks show up here once it is."))
-            } else if model.todos.isEmpty {
-                note(L("No open todos. Add them in Task Tracker from the menu bar."))
-            } else {
-                ScrollView(.vertical, showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        stage(.inProgress, L("In Progress"))
-                        stage(.todo, L("Todo"))
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 10)
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 14)
+            .padding(.top, 14)
+            .padding(.bottom, 10)
+            switch model.showWork {
+            case .tasks: TaskList()
+            case .menu:
+                if let menu = model.menuPanel {
+                    MenuView(panel: menu)
+                        .onAppear { menu.didOpen() }
                 }
-                Text(L("Right-click a todo to start a session with it or paste it into one. Nothing is sent until you press Return."))
-                    .font(.system(size: 11))
-                    .foregroundColor(Theme.faint)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 12)
             }
-            Spacer(minLength: 0)
         }
         .frame(width: TodoPanel.width)
-        .frame(maxHeight: .infinity)
+        .frame(maxHeight: .infinity, alignment: .top)
         .background(Theme.panel)
         .overlay(alignment: .trailing) { Rectangle().fill(Theme.line).frame(width: 1) }
     }
 
+    private func countText(_ n: Int) -> String { n > 0 ? "  \(n)" : "" }
+}
+
+private struct TaskList: View {
+    @EnvironmentObject var model: AppModel
+    @State private var draft = ""
+    @FocusState private var adding: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "plus").font(.system(size: 12, weight: .semibold)).foregroundColor(Theme.muted)
+                TextField(L("Add a task"), text: $draft)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+                    .focused($adding)
+                    .onSubmit {
+                        model.addTask(draft)
+                        draft = ""
+                        adding = true
+                    }
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 36)
+            .background(RoundedRectangle(cornerRadius: 9).fill(Theme.bg))
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(adding ? Theme.accent.opacity(0.6) : Theme.border, lineWidth: 1))
+            .padding(.horizontal, 14)
+            .padding(.bottom, 6)
+
+            if let problem = model.tasks?.problem {
+                Text(problem).font(.system(size: 12)).foregroundColor(SessionStatus.needs.color)
+                    .padding(.horizontal, 18).padding(.vertical, 6)
+            }
+            let todos = model.todos
+            if todos.isEmpty {
+                Text(L("No open tasks. Add one above, or with ⌃⌥T from any app."))
+                    .font(.system(size: 13))
+                    .foregroundColor(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 8)
+            } else {
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        stage(todos, .inProgress, L("In Progress"))
+                        stage(todos, .todo, L("Todo"))
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 10)
+                }
+            }
+            Spacer(minLength: 0)
+            Text(L("Right-click a task to start a session with it or paste it into one. Nothing is sent until you press Return."))
+                .font(.system(size: 11))
+                .foregroundColor(Theme.faint)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 12)
+        }
+    }
+
     @ViewBuilder
-    private func stage(_ stage: Todo.Stage, _ title: String) -> some View {
-        let items = model.todos.filter { $0.stage == stage }
+    private func stage(_ todos: [Todo], _ stage: Todo.Stage, _ title: String) -> some View {
+        let items = todos.filter { $0.stage == stage }
         if !items.isEmpty {
             SectionLabel(title)
                 .padding(.horizontal, 8)
@@ -1218,15 +1287,6 @@ struct TodoPanel: View {
                 .padding(.bottom, 2)
             ForEach(items) { TodoRow(todo: $0) }
         }
-    }
-
-    private func note(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 13))
-            .foregroundColor(Theme.muted)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 8)
     }
 }
 
@@ -1237,11 +1297,18 @@ struct TodoRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Circle()
-                .strokeBorder(todo.stage == .inProgress ? SessionStatus.working.color : Theme.faint, lineWidth: 1.5)
-                .background(Circle().fill(todo.stage == .inProgress ? SessionStatus.working.color.opacity(0.35) : .clear))
-                .frame(width: 11, height: 11)
-                .padding(.top, 3)
+            Button { model.setStage(todo, .done) } label: {
+                Circle()
+                    .strokeBorder(todo.stage == .inProgress ? SessionStatus.working.color : Theme.faint, lineWidth: 1.5)
+                    .background(Circle().fill(todo.stage == .inProgress ? SessionStatus.working.color.opacity(0.3) : .clear))
+                    .overlay {
+                        if hover { Image(systemName: "checkmark").font(.system(size: 8, weight: .heavy)).foregroundColor(Theme.muted) }
+                    }
+                    .frame(width: 15, height: 15)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 1)
+            .help(L("Mark done"))
             VStack(alignment: .leading, spacing: 3) {
                 Text(todo.title).font(.system(size: 13)).lineLimit(3).fixedSize(horizontal: false, vertical: true)
                 if let meta = meta {
@@ -1251,10 +1318,11 @@ struct TodoRow: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 8)
+        .padding(.vertical, 7)
         .background(RoundedRectangle(cornerRadius: 9).fill(hover ? Theme.raised : Color.clear))
         .contentShape(Rectangle())
         .onHover { hover = $0 }
+        .onTapGesture(count: 2) { model.openInTaskList(todo) }
         .help(todo.title)
         .contextMenu {
             Menu(L("Start a new session with it")) {
@@ -1267,15 +1335,22 @@ struct TodoRow: View {
                 Button(L("Choose a folder…")) { chooseFolder() }
             }
             Menu(L("Paste into a session")) {
-                if model.sessions.isEmpty {
-                    Text(L("No sessions open"))
-                }
+                if model.sessions.isEmpty { Text(L("No sessions open")) }
                 ForEach(model.sessions) { s in
                     Button((s.shortcut.map { $0 + "  " } ?? "") + s.title) { model.paste(todo, into: s) }
                         .disabled(s.tty == nil || s.status == .needs)
                 }
             }
             Divider()
+            if todo.stage == .todo {
+                Button(L("Move to In Progress")) { model.setStage(todo, .inProgress) }
+            } else {
+                Button(L("Move to Todo")) { model.setStage(todo, .todo) }
+            }
+            Button(L("Defer")) { model.setStage(todo, .deferred) }
+            Button(L("Mark done")) { model.setStage(todo, .done) }
+            Divider()
+            Button(L("Open in the task list (⌃⌥T)")) { model.openInTaskList(todo) }
             Button(L("Copy")) { model.copyToClipboard(todo.pasteText) }
         }
     }
@@ -1297,5 +1372,114 @@ struct TodoRow: View {
         panel.allowsMultipleSelection = false
         panel.directoryURL = model.folders.first.map { URL(fileURLWithPath: $0) }
         if panel.runModal() == .OK, let url = panel.url { model.startSession(with: todo, in: url.path) }
+    }
+}
+
+// MARK: - A session's checks and ideas
+
+/// In a session's detail: what's on the menu for the PRs this session opened.
+struct SessionMenuSection: View {
+    var session: Session
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        if let menu = model.menuPanel {
+            let groups = menu.groups(forSession: session.id).filter { g in g.items.contains { !$0.status.isSettled } }
+            if !groups.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    SectionLabel(L("On the menu"))
+                    ForEach(groups, id: \.pr.id) { group in
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 6) {
+                                Text("#\(group.pr.number)").font(Theme.mono(12)).foregroundColor(Theme.faint)
+                                Text(group.pr.title ?? group.pr.repo).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                                Spacer(minLength: 0)
+                                if group.items.contains(where: { $0.status == .problem }) {
+                                    Button(L("Fix in its session")) { menu.fix(group.pr) }
+                                        .buttonStyle(ChipButtonStyle())
+                                        .disabled(menu.isBusy(group.pr.id))
+                                }
+                            }
+                            ForEach(group.items.filter { !$0.status.isSettled }) { item in
+                                MenuItemRow(item: item, menu: menu)
+                            }
+                        }
+                    }
+                    if let message = menu.message {
+                        Text(message).font(.system(size: 12))
+                            .foregroundColor(menu.messageIsError ? Theme.danger : Theme.muted)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct MenuItemRow: View {
+    var item: MenuItem
+    @Bindable var menu: MenuPanel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: item.kind == .check ? "checkmark.circle" : "lightbulb")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(item.kind == .check ? SessionStatus.done.color : SessionStatus.needs.color)
+                    .padding(.top, 2)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.text).font(.system(size: 13)).foregroundColor(Theme.body).fixedSize(horizontal: false, vertical: true)
+                    let meta = [item.location, item.minutes.map { "\($0) min" }, item.status == .open ? nil : item.status.label]
+                        .compactMap { $0 }.joined(separator: " · ")
+                    if !meta.isEmpty { Text(meta).font(.system(size: 11)).foregroundColor(Theme.faint) }
+                }
+            }
+            if menu.reportingID == item.id {
+                TextField(L("What went wrong?"), text: $menu.draft, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+                    .padding(8)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Theme.bg))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
+                HStack(spacing: 6) {
+                    Spacer()
+                    Button(L("Cancel")) { menu.cancelProblem() }.buttonStyle(ChipButtonStyle())
+                    Button(L("Send to the PR")) { menu.sendProblem(item) }.buttonStyle(ChipButtonStyle())
+                        .disabled(menu.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || menu.isBusy(item.id))
+                }
+            } else if item.status == .open || item.status == .later {
+                HStack(spacing: 6) {
+                    if item.kind == .check {
+                        Button(L("Works")) { menu.setStatus(item, .works) }.buttonStyle(MiniButtonStyle())
+                        Button(L("Problem…")) { menu.beginProblem(item) }.buttonStyle(MiniButtonStyle())
+                    } else {
+                        Button(L("Make issue")) { menu.makeIssue(item) }.buttonStyle(MiniButtonStyle())
+                            .disabled(menu.isBusy(item.id))
+                    }
+                    if item.status != .later {
+                        Button(L("Later")) { menu.setStatus(item, .later) }.buttonStyle(MiniButtonStyle())
+                    }
+                    Button(L("Dismiss")) { menu.setStatus(item, .dismissed) }.buttonStyle(MiniButtonStyle())
+                    if item.openURL != nil {
+                        Button(L("Open")) { menu.open(item) }.buttonStyle(MiniButtonStyle())
+                    }
+                }
+                .padding(.leading, 20)
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Theme.field))
+    }
+}
+
+struct MiniButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12))
+            .foregroundColor(Theme.text)
+            .padding(.horizontal, 9)
+            .frame(height: 26)
+            .background(RoundedRectangle(cornerRadius: 7).fill(configuration.isPressed ? Theme.raised : Theme.surfaceHi))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.border, lineWidth: 1))
+            .contentShape(Rectangle())
     }
 }

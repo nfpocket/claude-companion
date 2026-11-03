@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import TaskTrackerCore
 
 MainActor.assumeIsolated {
     // `ClaudeCompanion --render-icon out.png` draws the app icon (used by scripts/build-app.sh).
@@ -8,6 +9,7 @@ MainActor.assumeIsolated {
         renderIcon(to: URL(fileURLWithPath: args[i + 1]))
         exit(0)
     }
+    Demo.prepareTaskData()
     if args.contains("--dump") {
         Task { @MainActor in
             await runDiagnostics(args)
@@ -63,11 +65,12 @@ func runDiagnostics(_ args: [String]) async {
     }
     let brain = Brain()
     print("claude: \(brain.claudePath ?? "not found")")
-    if let todos = TodoStore.parse(TodoStore.fileURL) {
-        let open = todos.filter { $0.stage == .inProgress }.count
-        print("Task Tracker: \(open) in progress, \(todos.count - open) todo, \(todos.filter { !$0.images.isEmpty }.count) with images")
-    } else {
-        print("Task Tracker: no data at \(TodoStore.fileURL.path)")
+    let tasks = TaskStore(fileURL: TaskStore.defaultFileURL)
+    let todos = tasks.openTodos
+    let doing = todos.filter { $0.stage == .inProgress }.count
+    print("Tasks: \(doing) in progress, \(todos.count - doing) todo, \(todos.filter { !$0.images.isEmpty }.count) with images")
+    if let menu = try? MenuStore().read() {
+        print("Menu: \(menu.prs.count) PRs, \(menu.openChecks) open checks, \(menu.openIdeas) open ideas")
     }
     if let i = args.firstIndex(of: "--route"), i + 1 < args.count {
         var withTabs = sessions

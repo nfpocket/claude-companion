@@ -1,4 +1,5 @@
 import Foundation
+import TaskTrackerCore
 
 /// `COMPANION_DEMO=<folder>`: runs with made-up sessions (no Ghostty, voice or Claude calls),
 /// writes screenshots of the window and the pill into <folder>, and quits. Used for the README.
@@ -51,12 +52,38 @@ enum Demo {
 }
 
 extension Demo {
-    static func todos() -> [Todo] {
-        [
-            Todo(id: "t1", title: "Add a dark mode toggle to the settings page", stage: .inProgress, folder: nil, images: []),
-            Todo(id: "t2", title: "Rate limit the public search API", stage: .todo, folder: "API", images: []),
-            Todo(id: "t3", title: "Fehlermeldungen im Checkout übersetzen", stage: .todo, folder: "API", images: []),
-            Todo(id: "t4", title: "Empty state for the orders list looks broken on mobile", stage: .todo, folder: nil, images: ["shot.png"]),
-        ]
+    /// Writes sample tasks and a sample menu with Task Tracker's own code into a temp folder and
+    /// points TASKTRACKER_DATA at it, so the demo never touches the real list.
+    @MainActor
+    static func prepareTaskData() {
+        guard on else { return }
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("companion-demo-\(getpid())")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let tasksFile = dir.appendingPathComponent("tasks.json")
+        setenv("TASKTRACKER_DATA", tasksFile.path, 1)
+
+        let store = TaskStore(fileURL: tasksFile)
+        let doing = store.add("Add a dark mode toggle to the settings page")
+        store.setStatus(doing, to: .inProgress)
+        store.add("Rate limit the public search API")
+        store.add("Fehlermeldungen im Checkout übersetzen")
+        store.add("Empty state for the orders list looks broken on mobile")
+
+        let actions = MenuActions(store: MenuStore(fileURL: dir.appendingPathComponent("menu.json")))
+        _ = try? actions.add(repo: "acme/shop-web", pr: 412, kind: .check,
+                             text: "Pay with a saved card on staging and land on the receipt",
+                             why: "Needs a real card in the payment sandbox", location: "staging", minutes: 2, session: "demo-1")
+        _ = try? actions.add(repo: "acme/shop-web", pr: 412, kind: .check,
+                             text: "The order email arrives within a minute", minutes: 1, session: "demo-1")
+        _ = try? actions.add(repo: "acme/shop-web", pr: 412, kind: .idea,
+                             text: "Remember the last payment method per customer", session: "demo-1")
+        _ = try? actions.add(repo: "acme/docs", pr: 88, kind: .check,
+                             text: "Release notes render on the docs site", location: "docs preview", minutes: 1, session: "demo-2")
+        try? MenuStore(fileURL: dir.appendingPathComponent("menu.json")).update { file in
+            for i in file.prs.indices {
+                file.prs[i].title = file.prs[i].number == 412 ? "Checkout flow refactor" : "Release notes for 2.4"
+                file.prs[i].state = .open
+            }
+        }
     }
 }
