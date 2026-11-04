@@ -27,5 +27,7 @@ let package = Package(
         ),
         .testTarget(name: "TaskTrackerCoreTests", dependencies: ["TaskTrackerCore"]),
         .testTarget(name: "TaskTrackerUITests", dependencies: ["TaskTrackerUI", "TaskTrackerCore"]),
+        .testTarget(name: "ClaudeCompanionTests", dependencies: ["ClaudeCompanion"],
+                    swiftSettings: [.swiftLanguageMode(.v5)]),
     ]
 )

@@ -160,7 +160,11 @@ final class Brain {
         """
         var lines: [String] = ["Sessions:"]
         for (i, s) in sessions.enumerated() {
-            var l = "s\(i + 1): \"\(s.title)\" — folder \(s.folder) — \(s.status.label)"
+            var l = "s\(i + 1): \"\(s.title)\" — folder \(s.folder)"
+            // A worktree or subfolder: the repo it belongs to, so "the fleet one" finds it too.
+            let project = s.project.isEmpty ? s.folder : Projects.name(s.project)
+            if project != s.folder { l += " (project \(project))" }
+            l += " — \(s.status.label)"
             if let t = s.tabIndex { l += " — Ghostty tab \(t)" }
             if let a = s.activity, s.status == .working { l += " — \(a)" }
             lines.append(l)

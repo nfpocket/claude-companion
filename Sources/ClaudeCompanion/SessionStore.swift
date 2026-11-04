@@ -44,6 +44,22 @@ final class SessionStore {
     // MARK: scanning
 
     private func scan() -> [Session] {
+        var list = rawScan()
+        for i in list.indices { list[i].project = projectRoot(list[i].cwd) }
+        return list
+    }
+
+    /// cwd → project root; a folder seldom moves into or out of a repo while it's open.
+    private var projectRoots: [String: String] = [:]
+
+    private func projectRoot(_ cwd: String) -> String {
+        if let r = projectRoots[cwd] { return r }
+        let r = Projects.root(of: cwd)
+        projectRoots[cwd] = r
+        return r
+    }
+
+    private func rawScan() -> [Session] {
         if Demo.on { return Demo.sessions() }
         let fm = FileManager.default
         guard let files = try? fm.contentsOfDirectory(at: Paths.sessions, includingPropertiesForKeys: nil) else { return [] }

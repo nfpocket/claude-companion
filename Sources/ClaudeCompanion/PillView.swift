@@ -47,14 +47,25 @@ struct PillView: View {
         var h = metrics.stripHeight
         if let act { h += act.height + 8 }
         if m.pillExpanded {
-            let rows = CGFloat(max(1, min(maxRows, m.sessions.count)))
-            h += 14 + 46 + 12 + rows * (rowHeight + 4) + 12 + 40 + 16
+            h += 14 + 46 + 12 + listHeight(m) + 12 + 40 + 16
         }
         let w = open ? max(metrics.collapsedWidth, expandedWidth) : metrics.collapsedWidth
         return CGSize(width: w, height: h)
     }
 
     static var expandedWidth: CGFloat { PillMetrics.expandedWidth }
+
+    static let sectionHeight: CGFloat = 24
+
+    /// The session list's height: every row (and project heading) up to `maxRows` rows' worth;
+    /// past that it scrolls.
+    @MainActor static func listHeight(_ m: AppModel) -> CGFloat {
+        let row = rowHeight + 4
+        let cap = CGFloat(maxRows) * row
+        guard let groups = m.projectGroups else { return CGFloat(max(1, min(maxRows, m.sessions.count))) * row }
+        let shown = groups.filter { !m.collapsedProjects.contains($0.id) }.reduce(0) { $0 + $1.sessions.count }
+        return min(cap, CGFloat(groups.count) * sectionHeight + CGFloat(shown) * row)
+    }
 
     var body: some View {
         let act = PillView.activity(model)
@@ -243,13 +254,25 @@ struct PillView: View {
             .frame(height: 46)
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 4) {
-                    ForEach(s) { session in
-                        Button { model.focus(session) } label: { row(session) }
-                            .buttonStyle(.plain)
+                    if let groups = model.projectGroups {
+                        ForEach(groups) { g in
+                            section(g)
+                            if !model.collapsedProjects.contains(g.id) {
+                                ForEach(g.sessions) { session in
+                                    Button { model.focus(session) } label: { row(session) }
+                                        .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    } else {
+                        ForEach(s) { session in
+                            Button { model.focus(session) } label: { row(session) }
+                                .buttonStyle(.plain)
+                        }
                     }
                 }
             }
-            .frame(height: CGFloat(max(1, min(PillView.maxRows, s.count))) * (PillView.rowHeight + 4))
+            .frame(height: PillView.listHeight(model))
             HStack(spacing: 8) {
                 Button(L("Summarize all")) { model.briefing() }.buttonStyle(PillButtonStyle()).focusable(false)
                 Button(L("What needs me?")) { model.askNeeds() }.buttonStyle(PillButtonStyle()).focusable(false)
@@ -261,6 +284,33 @@ struct PillView: View {
         .padding(.horizontal, 18)
         .padding(.top, 14)
         .padding(.bottom, 16)
+    }
+
+    /// A project's heading over its sessions; click it to fold them away (the same as in the window).
+    private func section(_ g: ProjectGroup) -> some View {
+        let collapsed = model.collapsedProjects.contains(g.id)
+        return Button { model.toggleCollapsed(g.id) } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
+                    .rotationEffect(.degrees(collapsed ? -90 : 0))
+                    .frame(width: 10)
+                Image(systemName: collapsed ? "folder.fill" : "folder").font(.system(size: 10, weight: .semibold))
+                Text(Projects.shortName(g.name, max: 30)).font(Theme.mono(11).weight(.medium)).lineLimit(1)
+                if collapsed {
+                    StatusRow(sessions: g.sessions, limit: 8, size: 10).padding(.leading, 4)
+                } else {
+                    Text("\(g.sessions.count)").font(.system(size: 10, weight: .bold)).foregroundColor(Theme.faint.opacity(0.7))
+                }
+                Spacer(minLength: 0)
+            }
+            .foregroundColor(Theme.faint)
+            .padding(.horizontal, 4)
+            .frame(height: PillView.sectionHeight - 4, alignment: .bottom)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .help((g.root as NSString).abbreviatingWithTildeInPath)
     }
 
     private func row(_ s: Session) -> some View {

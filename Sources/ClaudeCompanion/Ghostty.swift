@@ -186,14 +186,15 @@ final class Ghostty {
         """)
     }
 
-    /// Opens a new tab (or window) in `cwd`, types `input` followed by Enter, and reports the
-    /// new terminal's tty (nil if Ghostty didn't say).
-    func newTab(cwd: String, input: String, done: ((String?) -> Void)? = nil) {
+    /// Opens a new tab (or window) in `cwd`, types `input` followed by Enter (nil: nothing), and
+    /// reports the new terminal's tty (nil if Ghostty didn't say).
+    func newTab(cwd: String, input: String?, done: ((String?) -> Void)? = nil) {
+        let typed = input.map { "set initial input of cfg to \(Self.q($0)) & linefeed" } ?? ""
         async("""
         tell application "Ghostty"
           set cfg to new surface configuration
           set initial working directory of cfg to \(Self.q(cwd))
-          set initial input of cfg to \(Self.q(input)) & linefeed
+          \(typed)
           if (count of windows) > 0 then
             set t to new tab in front window with configuration cfg
           else

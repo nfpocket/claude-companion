@@ -62,6 +62,18 @@ struct HeaderBar: View {
                     .foregroundColor(SessionStatus.needs.color)
                     .help(L("Run scripts/install-hooks.sh so “needs you” shows up."))
             }
+            if model.canGroupByProject {
+                Button { model.groupByProject.toggle() } label: {
+                    Image(systemName: model.groupByProject ? "folder.fill" : "folder")
+                        .font(.system(size: 13))
+                        .foregroundColor(model.groupByProject ? Theme.text : Theme.muted)
+                        .frame(width: 16)
+                }
+                .buttonStyle(ChromeButtonStyle())
+                .help(model.groupByProject ? ui("Grouped by project: click to show them all together",
+                                                "Nach Projekt gruppiert: klicken, um alle zusammen zu zeigen")
+                                           : ui("Group the sessions by project", "Sessions nach Projekt gruppieren"))
+            }
             Button { model.showTodos.toggle() } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "checklist")
@@ -190,60 +202,41 @@ struct LineShape: Shape {
     }
 }
 
+/// The sessions around the avatar (the orbit), or, when they run in more than one project, as a
+/// graph: the avatar, a node per project, and each project's sessions beside its node.
 struct StageView: View {
     @EnvironmentObject var model: AppModel
+
+    private static let spring = Animation.spring(response: 0.55, dampingFraction: 0.86)
 
     var body: some View {
         GeometryReader { geo in
             let drawer: CGFloat = model.selectedId != nil ? model.detailWidth : 0
             let leading: CGFloat = model.showTodos ? model.sidebarWidth : 0
-            let lay = OrbitLayout(size: geo.size, sessions: model.sessions, drawer: drawer,
-                                  bottom: model.overlayHeight, leading: leading)
+            let groups = model.projectGroups
             ZStack(alignment: .topLeading) {
                 // Clicking the background takes focus off the task list, so Space talks again.
                 Color.clear
                     .contentShape(Rectangle())
                     .onTapGesture { NSApp.keyWindow?.makeFirstResponder(nil) }
-                Ellipse()
-                    .stroke(Theme.ring, style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                    .frame(width: lay.rx * 2, height: lay.ry * 2)
-                    .position(lay.center)
-                ForEach(model.sessions) { s in
-                    let style = cardStyle(s)
-                    LineShape(from: lay.center, to: lay.point(s.id))
-                        .stroke(lineColor(s, style), lineWidth: style.highlight != nil ? 2 : 1)
-                }
-                AvatarView(mode: model.avatar, size: lay.compact ? 104 : 140, level: { model.voiceLevel() })
-                    .position(lay.center)
-                    .onTapGesture { _ = model.escape() }
-                if lay.roomy {
-                    VStack(spacing: 4) {
-                        Text(avatarTitle).font(.system(size: 16, weight: .semibold))
-                        Text(avatarSubtitle).font(.system(size: 12)).foregroundColor(Theme.muted).lineLimit(1)
-                    }
-                    .frame(width: 280)
-                    .position(x: lay.center.x, y: lay.center.y + 70 + 30)
-                }
-                ForEach(model.sessions) { s in
-                    let style = cardStyle(s)
-                    SessionCard(session: s, menuCount: model.menuPanel?.openCount(forSession: s.id) ?? 0,
-                                selected: model.selectedId == s.id,
-                                highlight: style.highlight, dimmed: style.dimmed) { model.select(s.id) }
-                        .frame(width: lay.width(s.id))
-                        .position(lay.point(s.id))
-                }
-                if model.sessions.isEmpty {
-                    Text(L("No Claude Code sessions are running.\nHold Space and say “start a session in …”, or click Start a session."))
-                        .multilineTextAlignment(.center)
-                        .font(.system(size: 13))
-                        .foregroundColor(Theme.muted)
-                        .frame(width: 420)
-                        .position(x: lay.center.x, y: lay.center.y + 150)
+                if let groups {
+                    // Room for the legend in the bottom corner when it shows.
+                    let legend: CGFloat = model.overlayHeight == 0 && !model.showTodos ? 30 : 0
+                    let stage = CGRect(x: leading, y: 0,
+                                       width: max(320, geo.size.width - drawer - leading),
+                                       height: max(300, geo.size.height - model.overlayHeight - legend))
+                    graph(GraphLayout(groups: groups, collapsed: model.collapsedProjects, stage: stage), groups, stage: stage)
+                } else {
+                    orbit(OrbitLayout(size: geo.size, sessions: model.sessions, drawer: drawer,
+                                      bottom: model.overlayHeight, leading: leading))
                 }
             }
-            .animation(.spring(response: 0.55, dampingFraction: 0.86), value: model.sessions.map(\.id))
-            .animation(.spring(response: 0.55, dampingFraction: 0.86), value: model.selectedId != nil)
-            .animation(.spring(response: 0.55, dampingFraction: 0.86), value: model.overlayHeight)
+            .animation(StageView.spring, value: model.sessions.map(\.id))
+            .animation(StageView.spring, value: groups?.map(\.id))
+            .animation(StageView.spring, value: model.collapsedProjects)
+            .animation(StageView.spring, value: model.selectedId != nil)
+            .animation(StageView.spring, value: model.showTodos)
+            .animation(StageView.spring, value: model.overlayHeight)
             .overlay(alignment: .bottomLeading) {
                 if model.overlayHeight == 0 && !model.showTodos { Legend().padding(.leading, 20).padding(.bottom, 16) }
             }
@@ -260,7 +253,119 @@ struct StageView: View {
         }
     }
 
-    private struct CardStyle { var highlight: Color?; var dimmed: Bool }
+    // MARK: orbit
+
+    @ViewBuilder
+    private func orbit(_ lay: OrbitLayout) -> some View {
+        Ellipse()
+            .stroke(Theme.ring, style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+            .frame(width: lay.rx * 2, height: lay.ry * 2)
+            .position(lay.center)
+        ForEach(model.sessions) { s in
+            let style = cardStyle(s)
+            LineShape(from: lay.center, to: lay.point(s.id))
+                .stroke(lineColor(s, style), lineWidth: style.highlight != nil ? 2 : 1)
+        }
+        AvatarView(mode: model.avatar, size: lay.compact ? 104 : 140, level: { model.voiceLevel() })
+            .position(lay.center)
+            .onTapGesture { _ = model.escape() }
+        if lay.roomy {
+            avatarCaption.position(x: lay.center.x, y: lay.center.y + 70 + 30)
+        }
+        ForEach(model.sessions) { s in
+            card(s).frame(width: lay.width(s.id)).position(lay.point(s.id))
+        }
+        if model.sessions.isEmpty {
+            Text(L("No Claude Code sessions are running.\nHold Space and say “start a session in …”, or click Start a session."))
+                .multilineTextAlignment(.center)
+                .font(.system(size: 13))
+                .foregroundColor(Theme.muted)
+                .frame(width: 420)
+                .position(x: lay.center.x, y: lay.center.y + 150)
+        }
+    }
+
+    // MARK: graph
+
+    /// Drawn at the graph's own size, scaled down (if it has to be) to fit the stage, and
+    /// scrolling when even that isn't enough.
+    @ViewBuilder
+    private func graph(_ lay: GraphLayout, _ groups: [ProjectGroup], stage: CGRect) -> some View {
+        let byId = Dictionary(uniqueKeysWithValues: model.sessions.map { ($0.id, $0) })
+        let content = ZStack(alignment: .topLeading) {
+            ForEach(lay.edges) { e in
+                let (color, width) = edgeStyle(e, groups: groups, sessions: byId)
+                EdgeShape(from: e.from, to: e.to, elbow: e.elbow).stroke(color, lineWidth: width)
+            }
+            AvatarView(mode: model.avatar, size: lay.avatarSize, level: { model.voiceLevel() })
+                .position(lay.avatar)
+                .onTapGesture { _ = model.escape() }
+            if lay.showsCaption {
+                avatarCaption.position(x: lay.avatar.x, y: lay.avatar.y + lay.avatarSize / 2 + 34)
+            }
+            ForEach(groups) { g in
+                let styles = g.sessions.map(cardStyle)
+                ProjectNode(group: g, collapsed: model.collapsedProjects.contains(g.id),
+                            highlight: styles.first { $0.highlight != nil }?.highlight,
+                            dimmed: styles.allSatisfy(\.dimmed))
+                    .position(lay.node(g.id))
+                ForEach(g.sessions) { s in
+                    if let p = lay.card(s.id) {
+                        card(s).frame(width: GraphLayout.cardW).position(p)
+                            .transition(.opacity.combined(with: .scale(scale: 0.92)))
+                    }
+                }
+            }
+        }
+        .frame(width: lay.size.width, height: lay.size.height, alignment: .topLeading)
+        .scaleEffect(lay.scale, anchor: .topLeading)
+        .frame(width: lay.size.width * lay.scale, height: lay.size.height * lay.scale, alignment: .topLeading)
+        Group {
+            if lay.scrolls {
+                ScrollView(.vertical, showsIndicators: true) {
+                    content.padding(.vertical, GraphLayout.margin).frame(maxWidth: .infinity)
+                }
+            } else {
+                content.frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .frame(width: stage.width, height: stage.height)
+        .offset(x: stage.minX, y: stage.minY)
+    }
+
+    /// An edge to a session takes the session's look; one to a project, its most pressing session's.
+    private func edgeStyle(_ e: GraphEdge, groups: [ProjectGroup], sessions: [String: Session]) -> (Color, CGFloat) {
+        if let id = e.session, let s = sessions[id] {
+            let style = cardStyle(s)
+            return (lineColor(s, style), style.highlight != nil ? 2 : 1.2)
+        }
+        let members = groups.first { $0.id == e.group }?.sessions ?? []
+        if let lit = members.first(where: { cardStyle($0).highlight != nil }) { return (lineColor(lit, cardStyle(lit)), 2) }
+        return (members.contains { $0.status == .needs } ? SessionStatus.needs.color.opacity(0.55) : Theme.line, 1.2)
+    }
+
+    // MARK: pieces
+
+    private func card(_ s: Session) -> some View {
+        let style = cardStyle(s)
+        return SessionCard(session: s, menuCount: model.menuPanel?.openCount(forSession: s.id) ?? 0,
+                           selected: model.selectedId == s.id,
+                           highlight: style.highlight, dimmed: style.dimmed) { model.select(s.id) }
+    }
+
+    private var avatarCaption: some View {
+        VStack(spacing: 4) {
+            Text(avatarTitle).font(.system(size: 16, weight: .semibold))
+            Text(avatarSubtitle).font(.system(size: 12)).foregroundColor(Theme.muted).lineLimit(1)
+        }
+        // Lines that pass under the caption stop at its edge instead of crossing the text.
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Theme.bg))
+        .frame(width: 280)
+    }
+
+    fileprivate struct CardStyle { var highlight: Color?; var dimmed: Bool }
 
     private func cardStyle(_ s: Session) -> CardStyle {
         if let p = model.pending, p.sessionId == s.id { return CardStyle(highlight: Theme.accent, dimmed: false) }

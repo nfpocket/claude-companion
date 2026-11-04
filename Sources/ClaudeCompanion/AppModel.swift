@@ -112,6 +112,12 @@ final class AppModel: ObservableObject {
     // MARK: settings
     @Published var speakOnDone: Bool { didSet { defaults.set(speakOnDone, forKey: "speakOnDone") } }
     @Published var onlyNeeds: Bool { didSet { defaults.set(onlyNeeds, forKey: "onlyNeeds") } }
+    /// Sessions in more than one project are grouped by project in the orbit and the pill.
+    @Published var groupByProject: Bool { didSet { defaults.set(groupByProject, forKey: "groupByProject") } }
+    /// Projects whose sessions are folded away (by project root).
+    @Published var collapsedProjects: Set<String> {
+        didSet { defaults.set(Array(collapsedProjects).sorted(), forKey: "collapsedProjects") }
+    }
     @Published var mutedUntil: Date? { didSet { defaults.set(mutedUntil?.timeIntervalSince1970, forKey: "mutedUntil") } }
     @Published var voiceId: String {
         didSet {
@@ -213,6 +219,8 @@ final class AppModel: ObservableObject {
         let tab = DetailTab(rawValue: defaults.string(forKey: "detailTab") ?? "") ?? .overview
         detailTab = tab == .menu ? .overview : tab
         onlyNeeds = defaults.object(forKey: "onlyNeeds") as? Bool ?? false
+        groupByProject = defaults.object(forKey: "groupByProject") as? Bool ?? true
+        collapsedProjects = Set(defaults.stringArray(forKey: "collapsedProjects") ?? [])
         if let t = defaults.object(forKey: "mutedUntil") as? Double { mutedUntil = Date(timeIntervalSince1970: t) }
         voiceId = defaults.string(forKey: "voiceId") ?? AppModel.defaultVoice
         voiceIdDE = defaults.string(forKey: "voiceIdDE") ?? AppModel.defaultVoiceDE
@@ -228,6 +236,8 @@ final class AppModel: ObservableObject {
             // Screenshots show the defaults, never this Mac's settings or history.
             speakOnDone = true
             onlyNeeds = false
+            groupByProject = true
+            collapsedProjects = []
             mutedUntil = nil
             voiceId = AppModel.defaultVoice
             voiceIdDE = AppModel.defaultVoiceDE
@@ -251,6 +261,21 @@ final class AppModel: ObservableObject {
     }
 
     var selected: Session? { sessions.first { $0.id == selectedId } }
+
+    /// The sessions by project, when they run in more than one and grouping is on (nil otherwise).
+    var projectGroups: [ProjectGroup]? { groupByProject ? Projects.grouping(sessions) : nil }
+
+    /// Whether grouping by project would show anything right now (for the switch in the header).
+    var canGroupByProject: Bool { Projects.grouping(sessions) != nil }
+
+    func toggleCollapsed(_ root: String) {
+        if collapsedProjects.contains(root) { collapsedProjects.remove(root) } else { collapsedProjects.insert(root) }
+    }
+
+    /// A new Ghostty tab with a plain shell in `folder`.
+    func openTerminal(in folder: String) {
+        ghostty.newTab(cwd: folder, input: nil)
+    }
 
     /// The language to talk about a session in.
     func lang(for s: Session) -> Lang {
@@ -1008,8 +1033,8 @@ final class AppModel: ObservableObject {
         if let s = sessions.first(where: { $0.tabIndex == n }) { focus(s) }
     }
 
-    func openNewSession() {
-        let folder = selected?.cwd ?? folders.first ?? Paths.home.path
+    func openNewSession(in folder: String? = nil) {
+        let folder = folder ?? selected?.cwd ?? folders.first ?? Paths.home.path
         pending = PendingAction(kind: .newSession, prompt: "", folder: folder, countdown: nil)
         pendingTimer?.invalidate()
     }

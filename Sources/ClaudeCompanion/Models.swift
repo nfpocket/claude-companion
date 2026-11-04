@@ -94,6 +94,8 @@ struct Session: Identifiable, Equatable {
     var unseen = false
     /// The language the session is held in; summaries and announcements use it.
     var language: Lang = .en
+    /// The repo it works in (see `Projects.root`), for grouping sessions by project.
+    var project: String = ""
 
     var folder: String { (cwd as NSString).lastPathComponent }
 

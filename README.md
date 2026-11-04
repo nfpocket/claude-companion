@@ -5,7 +5,7 @@ A companion for the Claude Code sessions you run in Ghostty. Every open session 
 It also has [Task Tracker](https://github.com/nfpocket/task-tracker) built in: your task list in the menu bar (⌃⌥T), and the menu of checks and ideas agents leave on their PRs, shown on the session that opened each PR.
 
 <p>
-  <img src="screenshots/orbit.png" width="600" alt="The orbit window: sessions around the avatar, todos from Task Tracker on the left">
+  <img src="screenshots/orbit.png" width="600" alt="The window: sessions by project around the avatar, todos from Task Tracker on the left">
   <img src="screenshots/pill.png" width="220" alt="The companion opened from the notch">
 </p>
 
@@ -46,6 +46,15 @@ In the chat field: Return sends, ⇧ Return or ⌥ Return starts a new line, Esc
 In the task list: Return adds a task or renames the selected one, ⌘Return starts a new line, Space marks it done, ⌘1 – ⌘4 move it to In Progress, Todo, Deferred or Done, ⇧⌘N groups the selection into a folder, ⌫ deletes and ⌘Z undoes.
 
 Click a session for where it stands, your last prompt, and buttons to open its tab, reply by voice, read it aloud, or stop it. Its **Chat** tab shows the conversation and lets you write to it without leaving the companion (see [Chat](#chat)). When the window isn't in front, the companion folds into the notch (or a pill under the menu bar on screens without one); click it for the list. When a session finishes or needs you, the notice drops out of the notch with **Open in Ghostty**: click it to jump to that tab. It shows up even when the companion is muted or "speak when a session finishes" is off.
+
+## Projects
+
+When your sessions run in more than one project, the window shows them as a graph instead of the orbit: Claude in the middle, a node for each project, and each project's sessions stacked beside its node. The project with the most urgent session comes first. On a wide window the projects go on both sides of Claude; on a narrower one all on its right; with the task list and a session's detail both open they stack, each project's sessions under it, and scroll if they don't fit. The list in the notch has a heading per project as well.
+
+- **Click a project** for its folder: open it in Finder, in a new Ghostty tab, or in your editor (VS Code, Cursor, Zed, Sublime Text or Nova, whichever you have), start a session there, or copy its path. Right-click works too.
+- **The chevron** folds a project's sessions away, and back. A folded project still shows how each of its sessions stands, and turns orange when one needs you. Clicking a project's heading in the notch does the same; what you fold stays folded.
+
+A project is the git repo a session works in, so a worktree or a subfolder counts as its repo; a folder outside any repo is a project of its own. The folder button in the header switches between the graph and the orbit; it only shows up when there is something to group (two or more projects, one of them with more than one session).
 
 ## Talking
 
@@ -116,7 +125,7 @@ Spoken audio is cached by text, so repeated announcements cost nothing. When few
 
 ## Setup
 
-The companion reads what Claude Code already writes: `~/.claude/sessions/` for which sessions are alive and busy, and each session's transcript for its title, last prompt, last answer and current tool. Ghostty's AppleScript dictionary tells it which tab holds which session (by tty) and lets it focus tabs, type and open new ones. Summaries and understanding what you said are quick `claude -p` calls with Haiku, on your normal Claude login, without tools, hooks or MCP servers.
+The companion reads what Claude Code already writes: `~/.claude/sessions/` for which sessions are alive and busy, and each session's transcript for its title, last prompt, last answer and current tool. A session's project comes from the `.git` folder (or worktree file) above its folder, read from disk without running git. Ghostty's AppleScript dictionary tells it which tab holds which session (by tty) and lets it focus tabs, type and open new ones. Summaries and understanding what you said are quick `claude -p` calls with Haiku, on your normal Claude login, without tools, hooks or MCP servers.
 
 To see when a session waits on you (a permission prompt, a question, a plan), `./scripts/install-hooks.sh` adds async hooks to `~/.claude/settings.json` that run `~/.claude/hooks/companion-hook.sh`. It backs up the settings first and is safe to run again; `--remove` takes the hooks out. Sessions that are already running may need a restart to pick them up.
 

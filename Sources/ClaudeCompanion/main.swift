@@ -102,9 +102,12 @@ func runDiagnostics(_ args: [String]) async {
     for s in sessions {
         let tab = s.tty.flatMap { snap.terms[$0]?.tabIndex }.map { "⌘\($0)" } ?? "  "
         print("\(tab) [\(s.status.rawValue)] [\(s.language.rawValue)] \(s.title)")
-        print("     line: \(s.statusLine) | meta: \(s.metaLine) | tty: \(s.tty ?? "-")")
+        print("     line: \(s.statusLine) | meta: \(s.metaLine) | tty: \(s.tty ?? "-") | project: \(Projects.name(s.project))")
         if let p = s.lastPrompt { print("     prompt: \(p.prefix(90).replacingOccurrences(of: "\n", with: " "))") }
         if let a = s.lastAnswer { print("     answer: \(a.prefix(90).replacingOccurrences(of: "\n", with: " "))") }
+    }
+    if let groups = Projects.grouping(sessions) {
+        print("Grouped by project: " + groups.map { "\($0.name) (\($0.sessions.count))" }.joined(separator: ", "))
     }
     let brain = Brain()
     print("claude: \(brain.claudePath ?? "not found")")
