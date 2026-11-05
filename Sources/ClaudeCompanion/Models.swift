@@ -96,6 +96,8 @@ struct Session: Identifiable, Equatable {
     var language: Lang = .en
     /// The repo it works in (see `Projects.root`), for grouping sessions by project.
     var project: String = ""
+    /// Where it works, for cards outside their project: "acme › api" (set by AppModel).
+    var place: String = ""
 
     var folder: String { (cwd as NSString).lastPathComponent }
 
@@ -116,11 +118,14 @@ struct Session: Identifiable, Equatable {
         }
     }
 
-    var metaLine: String {
+    var metaLine: String { metaLine(place: folder) }
+
+    /// The meta line with `place` instead of the folder's name.
+    func metaLine(place: String) -> String {
         switch status {
-        case .working, .shell: return "\(folder) · \(Fmt.duration(since))"
-        case .needs: return "\(folder) · " + ui("waiting", "wartet") + " \(Fmt.duration(since))"
-        default: return folder
+        case .working, .shell: return "\(place) · \(Fmt.duration(since))"
+        case .needs: return "\(place) · " + ui("waiting", "wartet") + " \(Fmt.duration(since))"
+        default: return place
         }
     }
 

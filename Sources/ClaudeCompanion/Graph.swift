@@ -1,49 +1,98 @@
 import SwiftUI
 
-/// A line in the graph: avatar → project, or project → session.
+/// A line in the graph: avatar → workspace or project, workspace → project, project → session.
 struct GraphEdge: Identifiable, Equatable {
     let from: CGPoint
     let to: CGPoint
     /// Down, then across (stacked layout); otherwise a sideways S-curve.
     let elbow: Bool
+    /// The node the line ends at, or (for a session) the node it hangs off.
     let group: String
     let session: String?
     var id: String { session.map { "s:" + $0 } ?? "g:" + group }
 }
 
-/// Where everything goes when the sessions are shown by project: the avatar, a node per project,
-/// and each project's sessions beside its node, joined by curves. Three arrangements, whichever
-/// shows things biggest: projects on both sides of the avatar, all on its right, or (on a narrow
-/// stage) stacked, each project's sessions under it. The graph has its own size (`size`) and is
-/// scaled down to fit the stage, but not below `minScale`: past that, it scrolls.
+/// A node of the graph, a workspace or a project, with what hangs off it: its projects (an open
+/// workspace) or session cards (an open project, or a folded workspace's urgent sessions).
+struct GraphItem: Equatable {
+    enum Kind { case workspace, repo }
+    let id: String
+    let kind: Kind
+    /// Its column, 0 right beside the avatar. Projects in workspaces are in column 1.
+    let column: Int
+    var children: [GraphItem] = []
+    var cards: [String] = []
+
+    var depth: Int { 1 + (children.map(\.depth).max() ?? 0) }
+
+    /// The graph for a project tree: workspaces, then their projects, then sessions. A folded
+    /// workspace keeps what needs you beside it; a folded project shows no sessions.
+    static func items(_ tree: ProjectTree, collapsed: Set<String>) -> [GraphItem] {
+        let col = tree.hasWorkspaces ? 1 : 0
+        func repo(_ g: ProjectGroup, _ c: Int) -> GraphItem {
+            let id = nodeId(g)
+            return GraphItem(id: id, kind: .repo, column: c, cards: collapsed.contains(id) ? [] : g.sessions.map(\.id))
+        }
+        // Workspaces without a session are for the sidebar, not the graph.
+        var out: [GraphItem] = tree.workspaces.filter { !$0.repos.isEmpty }.map { w in
+            if collapsed.contains(w.id) {
+                let urgent = w.sessions.filter { $0.status == .needs || ($0.status == .failed && $0.unseen) }
+                return GraphItem(id: w.id, kind: .workspace, column: 0, cards: urgent.map(\.id))
+            }
+            return GraphItem(id: w.id, kind: .workspace, column: 0, children: w.repos.map { repo($0, 1) })
+        }
+        out += tree.loose.map { repo($0, col) }
+        return out
+    }
+
+    /// A project's node id: its folder, except for sessions in a workspace's own folder, whose
+    /// "project" is the workspace's folder too.
+    static func nodeId(_ g: ProjectGroup) -> String {
+        g.workspace != nil && g.workspace == ProjectTree.normalized(g.root) ? g.id + "#folder" : g.id
+    }
+}
+
+/// Where everything goes in the graph: the avatar, a node per workspace and project, and each
+/// project's sessions beside it, joined by curves. Three arrangements, whichever shows things
+/// biggest: on both sides of the avatar, all on its right, or (on a narrow stage) stacked, each
+/// node's contents under it. The graph has its own size (`size`); the canvas shows it at `scale`
+/// (big enough to read) and pans and zooms it.
 struct GraphLayout {
     enum Mode { case twoSides, oneSide, stacked }
 
     static let cardW: CGFloat = 272
     static let cardH: CGFloat = 84
     static let cardGap: CGFloat = 10
+    /// Between the first-level blocks, and between the projects of one workspace.
     static let groupGap: CGFloat = 26
+    static let innerGap: CGFloat = 14
     static let nodeW: CGFloat = 200
     static let nodeH: CGFloat = 54
     /// The avatar with its caption (beside the projects).
     static let avatarW: CGFloat = 180
     static let avatarH: CGFloat = 120 + 66
-    /// Avatar → node and node → cards.
+    /// Avatar → node, node → node, and node → cards.
     static let toNode: CGFloat = 56
     static let toCard: CGFloat = 48
-    /// Stacked: how far the cards sit in from their project's node.
+    /// Stacked: how far each level sits in from the one above.
     static let indent: CGFloat = 30
     static let margin: CGFloat = 24
-    static let minScale: CGFloat = 0.8
-    /// One side: node and cards, with the space before each.
-    static let sideW: CGFloat = toNode + nodeW + toCard + cardW
+    /// The smallest scale the graph starts at; past that, the canvas pans.
+    static let minScale: CGFloat = 0.75
+
+    /// One side: the node columns and the cards, with the space before each.
+    static func sideW(columns: Int) -> CGFloat {
+        toNode + CGFloat(columns) * nodeW + CGFloat(columns - 1) * toNode + toCard + cardW
+    }
 
     let mode: Mode
+    let columns: Int
     /// The graph's own size, before scaling.
     let size: CGSize
+    /// The scale it starts at: as big as fits, up to 1, but not below `minScale`.
     let scale: CGFloat
-    /// Taller than the stage even at `minScale`: scroll it.
-    let scrolls: Bool
+    /// The scale at which all of it fits the stage (up to 1).
+    let fitScale: CGFloat
     let avatar: CGPoint
     let avatarSize: CGFloat
     /// The caption under the avatar (not when stacked, where room is short).
@@ -53,8 +102,10 @@ struct GraphLayout {
     private var cards: [String: CGPoint] = [:]
 
     var twoSided: Bool { mode == .twoSides }
-    func node(_ id: String) -> CGPoint { nodes[id] ?? avatar }
-    /// Nil for a session in a collapsed project.
+    /// Bigger than the stage at `scale`: the canvas pans.
+    var scrolls: Bool { fitScale < scale - 0.001 }
+    func node(_ id: String) -> CGPoint? { nodes[id] }
+    /// Nil for a session that isn't shown (in a folded project).
     func card(_ id: String) -> CGPoint? { cards[id] }
     /// The avatar and, beside the projects, its caption: kept clear of everything else.
     var avatarBox: CGRect {
@@ -63,116 +114,153 @@ struct GraphLayout {
             : CGRect(x: avatar.x - avatarSize / 2, y: avatar.y - avatarSize / 2, width: avatarSize, height: avatarSize)
     }
 
-    /// A project's height beside the avatar: its node, or its stack of cards when that's taller.
-    static func blockHeight(_ g: ProjectGroup, collapsed: Bool) -> CGFloat {
-        guard !collapsed, !g.sessions.isEmpty else { return nodeH }
-        return max(nodeH, cardsHeight(g.sessions.count))
+    // MARK: sizes
+
+    /// A node's height beside the avatar: the node, or what hangs off it when that's taller.
+    static func blockHeight(_ item: GraphItem) -> CGFloat {
+        if !item.children.isEmpty {
+            return max(nodeH, stackHeight(item.children.map(blockHeight), gap: innerGap))
+        }
+        return max(nodeH, cardsHeight(item.cards.count))
+    }
+
+    /// Stacked: the node with everything under it.
+    static func stackedHeight(_ item: GraphItem) -> CGFloat {
+        if !item.children.isEmpty {
+            return nodeH + item.children.reduce(0) { $0 + cardGap + stackedHeight($1) }
+        }
+        return nodeH + (item.cards.isEmpty ? 0 : cardGap + cardsHeight(item.cards.count))
     }
 
     private static func cardsHeight(_ n: Int) -> CGFloat {
         CGFloat(n) * cardH + CGFloat(max(0, n - 1)) * cardGap
     }
 
-    private static func stackHeight(_ heights: [CGFloat]) -> CGFloat {
-        heights.reduce(0, +) + groupGap * CGFloat(max(0, heights.count - 1))
+    private static func stackHeight(_ heights: [CGFloat], gap: CGFloat = groupGap) -> CGFloat {
+        heights.reduce(0, +) + gap * CGFloat(max(0, heights.count - 1))
     }
 
-    init(groups: [ProjectGroup], collapsed: Set<String>, stage: CGRect) {
-        let heights = groups.map { GraphLayout.blockHeight($0, collapsed: collapsed.contains($0.id)) }
-        // Both sides: each project, in order, goes to the shorter side (the first to the right).
+    init(items: [GraphItem], stage: CGRect) {
+        columns = max(1, (items.map { $0.column + $0.depth }.max() ?? 1))
+        let heights = items.map(GraphLayout.blockHeight)
+        let sideW = GraphLayout.sideW(columns: columns)
+        // Both sides: each block, in order, goes to the shorter side (the first to the right).
         var right: [Int] = [], left: [Int] = []
         var rh: CGFloat = 0, lh: CGFloat = 0
         for (i, h) in heights.enumerated() {
             if rh <= lh { right.append(i); rh += h + GraphLayout.groupGap } else { left.append(i); lh += h + GraphLayout.groupGap }
         }
-        let oneSize = CGSize(width: GraphLayout.avatarW + GraphLayout.sideW,
+        let oneSize = CGSize(width: GraphLayout.avatarW + sideW,
                              height: max(GraphLayout.avatarH, GraphLayout.stackHeight(heights)))
-        let twoSize = CGSize(width: GraphLayout.avatarW + 2 * GraphLayout.sideW,
+        let twoSize = CGSize(width: GraphLayout.avatarW + 2 * sideW,
                              height: max(GraphLayout.avatarH, GraphLayout.stackHeight(right.map { heights[$0] }),
                                          GraphLayout.stackHeight(left.map { heights[$0] })))
-        let room = CGSize(width: stage.width - 2 * GraphLayout.margin, height: stage.height - 2 * GraphLayout.margin)
+        let room = CGSize(width: max(1, stage.width - 2 * GraphLayout.margin), height: max(1, stage.height - 2 * GraphLayout.margin))
         func fit(_ s: CGSize) -> CGFloat { min(1, room.width / s.width, room.height / s.height) }
         let one = fit(oneSize), two = left.isEmpty ? 0 : fit(twoSize)
+        // Beside the avatar works whenever its width fits at a readable size: the canvas pans
+        // up and down for the rest.
+        let oneWide = room.width / oneSize.width >= GraphLayout.minScale
+        let twoWide = !left.isEmpty && room.width / twoSize.width >= GraphLayout.minScale
 
-        if max(one, two) >= GraphLayout.minScale {
+        if oneWide || twoWide {
             // Whichever shows things bigger; both sides (the avatar in the middle) on a tie.
-            mode = two >= one - 0.001 ? .twoSides : .oneSide
+            mode = twoWide && (!oneWide || two >= one - 0.001) ? .twoSides : .oneSide
             if mode == .oneSide { right = Array(heights.indices); left = [] }
             size = mode == .twoSides ? twoSize : oneSize
-            scale = max(one, two)
-            scrolls = false
+            fitScale = mode == .twoSides ? two : one
+            scale = min(1, room.width / size.width, max(GraphLayout.minScale, room.height / size.height))
             avatarSize = 120
-            let avatarX = mode == .twoSides ? GraphLayout.sideW + GraphLayout.avatarW / 2 : GraphLayout.avatarW / 2
-            // The avatar and its caption, centered top to bottom.
-            avatar = CGPoint(x: avatarX, y: (size.height - GraphLayout.avatarH) / 2 + avatarSize / 2)
-            placeBeside(groups, heights: heights, sides: [(right, 1), (left, -1)], collapsed: collapsed)
+            let avatarX = mode == .twoSides ? sideW + GraphLayout.avatarW / 2 : GraphLayout.avatarW / 2
+            // The avatar and its caption, centered top to bottom; in a graph taller than the
+            // stage, in the middle of the part you see first.
+            let seen = max(GraphLayout.avatarH, min(size.height, room.height / scale))
+            avatar = CGPoint(x: avatarX, y: (seen - GraphLayout.avatarH) / 2 + avatarSize / 2)
+            for (side, dir) in [(right, CGFloat(1)), (left, CGFloat(-1))] {
+                var y = (size.height - GraphLayout.stackHeight(side.map { heights[$0] })) / 2
+                let from = CGPoint(x: avatar.x + dir * (avatarSize / 2 + 6), y: avatar.y)
+                for i in side {
+                    placeBeside(items[i], top: y, height: heights[i], dir: dir, from: from)
+                    y += heights[i] + GraphLayout.groupGap
+                }
+            }
         } else {
             mode = .stacked
             avatarSize = 72
-            let width = max(GraphLayout.nodeW, GraphLayout.indent + GraphLayout.cardW)
-            avatar = CGPoint(x: width / 2, y: avatarSize / 2)
-            let height = avatarSize + 20 + GraphLayout.stackHeight(groups.map {
-                collapsed.contains($0.id) || $0.sessions.isEmpty
-                    ? GraphLayout.nodeH : GraphLayout.nodeH + GraphLayout.cardGap + GraphLayout.cardsHeight($0.sessions.count)
-            })
-            size = CGSize(width: width, height: height)
-            let h = room.height / height
-            scale = min(1, room.width / width, max(GraphLayout.minScale, h))
-            scrolls = h < scale - 0.001
-            placeStacked(groups, collapsed: collapsed)
-        }
-    }
-
-    /// Projects beside the avatar, `dir` 1 to its right and -1 to its left.
-    private mutating func placeBeside(_ groups: [ProjectGroup], heights: [CGFloat], sides: [([Int], CGFloat)], collapsed: Set<String>) {
-        let nodeOffset = GraphLayout.avatarW / 2 + GraphLayout.toNode + GraphLayout.nodeW / 2
-        let cardOffset = nodeOffset + GraphLayout.nodeW / 2 + GraphLayout.toCard + GraphLayout.cardW / 2
-        let r = avatarSize / 2 + 6
-        for (side, dir) in sides {
-            var y = (size.height - GraphLayout.stackHeight(side.map { heights[$0] })) / 2
-            for i in side {
-                let g = groups[i], h = heights[i]
-                let node = CGPoint(x: avatar.x + dir * nodeOffset, y: y + h / 2)
-                nodes[g.id] = node
-                edges.append(GraphEdge(from: CGPoint(x: avatar.x + dir * r, y: avatar.y),
-                                       to: CGPoint(x: node.x - dir * GraphLayout.nodeW / 2, y: node.y),
-                                       elbow: false, group: g.id, session: nil))
-                if !collapsed.contains(g.id) {
-                    var cy = y + (h - GraphLayout.cardsHeight(g.sessions.count)) / 2 + GraphLayout.cardH / 2
-                    for s in g.sessions {
-                        let p = CGPoint(x: avatar.x + dir * cardOffset, y: cy)
-                        cards[s.id] = p
-                        edges.append(GraphEdge(from: CGPoint(x: node.x + dir * GraphLayout.nodeW / 2, y: node.y),
-                                               to: CGPoint(x: p.x - dir * GraphLayout.cardW / 2, y: p.y),
-                                               elbow: false, group: g.id, session: s.id))
-                        cy += GraphLayout.cardH + GraphLayout.cardGap
-                    }
-                }
-                y += h + GraphLayout.groupGap
+            func width(_ item: GraphItem, _ level: Int) -> CGFloat {
+                let own = CGFloat(level) * GraphLayout.indent + (item.cards.isEmpty ? GraphLayout.nodeW
+                    : max(GraphLayout.nodeW, GraphLayout.indent + GraphLayout.cardW))
+                return item.children.map { width($0, level + 1) }.reduce(own, max)
+            }
+            let w = items.map { width($0, 0) }.reduce(max(GraphLayout.nodeW, avatarSize), max)
+            avatar = CGPoint(x: w / 2, y: avatarSize / 2)
+            let height = avatarSize + 20 + GraphLayout.stackHeight(items.map(GraphLayout.stackedHeight))
+            size = CGSize(width: w, height: height)
+            fitScale = min(1, room.width / w, room.height / height)
+            scale = min(1, room.width / w, max(GraphLayout.minScale, room.height / height))
+            var y = avatarSize + 20
+            for item in items {
+                placeStacked(item, top: y, level: 0)
+                y += GraphLayout.stackedHeight(item) + GraphLayout.groupGap
             }
         }
     }
 
-    /// The avatar on top, then each project's node with its sessions under it, set in a little.
-    private mutating func placeStacked(_ groups: [ProjectGroup], collapsed: Set<String>) {
-        var y = avatarSize + 20
-        for g in groups {
-            let node = CGPoint(x: GraphLayout.nodeW / 2, y: y + GraphLayout.nodeH / 2)
-            nodes[g.id] = node
-            y += GraphLayout.nodeH
-            if !collapsed.contains(g.id), !g.sessions.isEmpty {
+    /// A node beside the avatar (`dir` 1 to its right, -1 to its left), and what hangs off it.
+    private mutating func placeBeside(_ item: GraphItem, top y: CGFloat, height h: CGFloat, dir: CGFloat, from: CGPoint) {
+        let W = GraphLayout.nodeW
+        let nodeOffset = GraphLayout.avatarW / 2 + GraphLayout.toNode + CGFloat(item.column) * (W + GraphLayout.toNode) + W / 2
+        let cardOffset = GraphLayout.avatarW / 2 + GraphLayout.sideW(columns: columns) - GraphLayout.cardW / 2
+        let node = CGPoint(x: avatar.x + dir * nodeOffset, y: y + h / 2)
+        nodes[item.id] = node
+        edges.append(GraphEdge(from: from, to: CGPoint(x: node.x - dir * W / 2, y: node.y),
+                               elbow: false, group: item.id, session: nil))
+        let out = CGPoint(x: node.x + dir * W / 2, y: node.y)
+        if !item.children.isEmpty {
+            let hs = item.children.map(GraphLayout.blockHeight)
+            var cy = y + (h - GraphLayout.stackHeight(hs, gap: GraphLayout.innerGap)) / 2
+            for (child, ch) in zip(item.children, hs) {
+                placeBeside(child, top: cy, height: ch, dir: dir, from: out)
+                cy += ch + GraphLayout.innerGap
+            }
+            return
+        }
+        var cy = y + (h - GraphLayout.cardsHeight(item.cards.count)) / 2 + GraphLayout.cardH / 2
+        for id in item.cards {
+            let p = CGPoint(x: avatar.x + dir * cardOffset, y: cy)
+            cards[id] = p
+            edges.append(GraphEdge(from: out, to: CGPoint(x: p.x - dir * GraphLayout.cardW / 2, y: p.y),
+                                   elbow: false, group: item.id, session: id))
+            cy += GraphLayout.cardH + GraphLayout.cardGap
+        }
+    }
+
+    /// Stacked: the node, then (set in a little) its projects or its cards.
+    private mutating func placeStacked(_ item: GraphItem, top: CGFloat, level: Int) {
+        let x = CGFloat(level) * GraphLayout.indent
+        let node = CGPoint(x: x + GraphLayout.nodeW / 2, y: top + GraphLayout.nodeH / 2)
+        nodes[item.id] = node
+        let spine = x + 15
+        var y = top + GraphLayout.nodeH
+        if !item.children.isEmpty {
+            for child in item.children {
                 y += GraphLayout.cardGap
-                for s in g.sessions {
-                    let p = CGPoint(x: GraphLayout.indent + GraphLayout.cardW / 2, y: y + GraphLayout.cardH / 2)
-                    cards[s.id] = p
-                    edges.append(GraphEdge(from: CGPoint(x: 15, y: node.y + GraphLayout.nodeH / 2),
-                                           to: CGPoint(x: GraphLayout.indent, y: p.y),
-                                           elbow: true, group: g.id, session: s.id))
-                    y += GraphLayout.cardH + GraphLayout.cardGap
-                }
-                y -= GraphLayout.cardGap
+                placeStacked(child, top: y, level: level + 1)
+                edges.append(GraphEdge(from: CGPoint(x: spine, y: node.y + GraphLayout.nodeH / 2),
+                                       to: CGPoint(x: x + GraphLayout.indent, y: y + GraphLayout.nodeH / 2),
+                                       elbow: true, group: child.id, session: nil))
+                y += GraphLayout.stackedHeight(child)
             }
-            y += GraphLayout.groupGap
+            return
+        }
+        for id in item.cards {
+            y += GraphLayout.cardGap
+            let p = CGPoint(x: x + GraphLayout.indent + GraphLayout.cardW / 2, y: y + GraphLayout.cardH / 2)
+            cards[id] = p
+            edges.append(GraphEdge(from: CGPoint(x: spine, y: node.y + GraphLayout.nodeH / 2),
+                                   to: CGPoint(x: x + GraphLayout.indent, y: p.y),
+                                   elbow: true, group: item.id, session: id))
+            y += GraphLayout.cardH
         }
     }
 }
@@ -207,30 +295,38 @@ struct EdgeShape: Shape {
     }
 }
 
-/// A project in the graph: its name and how its sessions stand. Click it (or right-click) for
-/// its folder: Finder, Ghostty, an editor, a new session; the chevron folds its sessions away.
-struct ProjectNode: View {
+/// A workspace or project in the graph: its name and how its sessions stand. Click it (or
+/// right-click) for its folder: Finder, Ghostty, an editor, a new session; the chevron folds it.
+struct GraphNode: View {
     @EnvironmentObject var model: AppModel
-    var group: ProjectGroup
+    var id: String
+    var kind: GraphItem.Kind
+    var name: String
+    var path: String
+    var sessions: [Session]
+    /// Projects without a session, for a workspace's line ("+ 9").
+    var idle = 0
     var collapsed: Bool
     var highlight: Color?
     var dimmed = false
     @State private var hover = false
 
     var body: some View {
-        let actions = ProjectAction.all(group, collapsed: collapsed, model: model)
+        let actions = ProjectAction.all(id: id, path: path, kind: kind, collapsed: collapsed, model: model)
         HStack(spacing: 0) {
             Button { ProjectAction.popUp(actions) } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: collapsed ? "folder.fill" : "folder")
-                        .font(.system(size: 15))
-                        .foregroundColor(needs ? SessionStatus.needs.color : Theme.muted)
+                    Image(systemName: kind == .workspace ? (collapsed ? "square.stack.3d.up.fill" : "square.stack.3d.up")
+                                                         : (collapsed ? "folder.fill" : "folder"))
+                        .font(.system(size: kind == .workspace ? 14 : 15))
+                        .foregroundColor(needs ? SessionStatus.needs.color : (kind == .workspace ? Theme.accentLight : Theme.muted))
+                        .frame(width: 18)
                     VStack(alignment: .leading, spacing: 5) {
-                        Text(Projects.shortName(group.name, max: 20))
-                            .font(Theme.mono(12).weight(.semibold))
+                        Text(Projects.shortName(name, max: 20))
+                            .font(kind == .workspace ? .system(size: 13, weight: .bold) : Theme.mono(12).weight(.semibold))
                             .foregroundColor(Theme.text)
                             .lineLimit(1)
-                        StatusRow(sessions: group.sessions, limit: 8)
+                        StatusRow(sessions: sessions, limit: kind == .workspace ? 5 : 7)
                     }
                     Spacer(minLength: 0)
                 }
@@ -239,8 +335,9 @@ struct ProjectNode: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help((group.root as NSString).abbreviatingWithTildeInPath)
-            Button { model.toggleCollapsed(group.id) } label: {
+            .help((path as NSString).abbreviatingWithTildeInPath
+                  + (idle > 0 ? " · " + ui("\(idle) more projects without sessions", "\(idle) weitere Projekte ohne Sessions") : ""))
+            Button { model.toggleCollapsed(id) } label: {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(Theme.muted)
@@ -249,10 +346,10 @@ struct ProjectNode: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(collapsed ? ui("Show its sessions", "Sessions zeigen") : ui("Fold its sessions away", "Sessions einklappen"))
+            .help(ProjectAction.foldTitle(kind, collapsed))
         }
         .frame(width: GraphLayout.nodeW, height: GraphLayout.nodeH)
-        .background(RoundedRectangle(cornerRadius: 12).fill(hover ? Theme.raised : Theme.surface))
+        .background(RoundedRectangle(cornerRadius: 12).fill(hover ? Theme.raised : (kind == .workspace ? Theme.surfaceHi : Theme.surface)))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(border, lineWidth: highlight != nil ? 2 : 1))
         .opacity(dimmed ? 0.45 : 1)
         .onHover { hover = $0 }
@@ -264,7 +361,7 @@ struct ProjectNode: View {
         .animation(.easeOut(duration: 0.18), value: collapsed)
     }
 
-    private var needs: Bool { group.sessions.contains { $0.status == .needs } }
+    private var needs: Bool { sessions.contains { $0.status == .needs } }
 
     private var border: Color {
         if let h = highlight { return h }
@@ -294,12 +391,26 @@ struct ProjectAction {
     let symbol: String
     let run: () -> Void
 
-    /// nil stands for a separator.
+    static func foldTitle(_ kind: GraphItem.Kind, _ collapsed: Bool) -> String {
+        if kind == .workspace {
+            return collapsed ? ui("Show its projects", "Projekte zeigen") : ui("Fold its projects away", "Projekte einklappen")
+        }
+        return collapsed ? ui("Show its sessions", "Sessions zeigen") : ui("Fold its sessions away", "Sessions einklappen")
+    }
+
+    /// What you can do with a folder: open it, start a session in it, pin it. `collapsed` adds
+    /// folding (for the graph); nil leaves it out. nil in the list stands for a separator.
     @MainActor
-    static func all(_ g: ProjectGroup, collapsed: Bool, model: AppModel) -> [ProjectAction?] {
-        let path = (g.root as NSString).expandingTildeInPath
+    static func all(id: String, path rawPath: String, kind: GraphItem.Kind, collapsed: Bool? = nil, model: AppModel) -> [ProjectAction?] {
+        let path = (rawPath as NSString).expandingTildeInPath
         let url = URL(fileURLWithPath: path, isDirectory: true)
+        // Pins go by folder (a graph node's id can carry a suffix).
+        let pin = kind == .workspace ? id : rawPath
         var list: [ProjectAction?] = [
+            ProjectAction(title: ui("Start a session here…", "Hier eine Session starten …"), symbol: "plus.bubble") {
+                model.openNewSession(in: path)
+            },
+            nil,
             ProjectAction(title: ui("Open in Finder", "Im Finder öffnen"), symbol: "folder") { NSWorkspace.shared.open(url) },
             ProjectAction(title: ui("Open in Ghostty", "In Ghostty öffnen"), symbol: "terminal") { model.openTerminal(in: path) },
         ]
@@ -309,18 +420,33 @@ struct ProjectAction {
             })
         }
         list += [
-            nil,
-            ProjectAction(title: ui("Start a session here…", "Hier eine Session starten …"), symbol: "plus.bubble") {
-                model.openNewSession(in: path)
-            },
             ProjectAction(title: ui("Copy path", "Pfad kopieren"), symbol: "doc.on.doc") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(path, forType: .string)
             },
             nil,
-            ProjectAction(title: collapsed ? ui("Show its sessions", "Sessions zeigen") : ui("Fold its sessions away", "Sessions einklappen"),
-                          symbol: collapsed ? "chevron.down" : "chevron.right") { model.toggleCollapsed(g.id) },
+            model.isPinned(pin)
+                ? ProjectAction(title: ui("Unpin", "Nicht mehr anheften"), symbol: "pin.slash") { model.togglePinned(pin) }
+                : ProjectAction(title: ui("Pin to the sidebar", "In der Seitenleiste anheften"), symbol: "pin") { model.togglePinned(pin) },
         ]
+        if kind == .workspace {
+            list.append(model.isHiddenWhenEmpty(id)
+                ? ProjectAction(title: ui("Always show it", "Immer zeigen"), symbol: "eye") { model.toggleHiddenWhenEmpty(id) }
+                : ProjectAction(title: ui("Hide it while nothing runs", "Ausblenden, solange nichts läuft"), symbol: "eye.slash") {
+                    model.toggleHiddenWhenEmpty(id)
+                })
+        }
+        if let collapsed {
+            list.append(nil)
+            list.append(ProjectAction(title: foldTitle(kind, collapsed), symbol: collapsed ? "chevron.down" : "chevron.right") {
+                model.toggleCollapsed(id)
+            })
+            if kind == .workspace {
+                list.append(ProjectAction(title: ui("Fold all the others", "Alle anderen einklappen"), symbol: "rectangle.compress.vertical") {
+                    model.foldOthers(than: id)
+                })
+            }
+        }
         return list
     }
 

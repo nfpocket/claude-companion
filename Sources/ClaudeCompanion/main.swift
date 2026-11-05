@@ -109,6 +109,17 @@ func runDiagnostics(_ args: [String]) async {
     if let groups = Projects.grouping(sessions) {
         print("Grouped by project: " + groups.map { "\($0.name) (\($0.sessions.count))" }.joined(separator: ", "))
     }
+    // The workspaces the sidebar shows, from the folders Claude Code ran in.
+    let known = Workspaces.discover(folders: AppModel.scanFolders())
+    let tree = Workspaces.tree(sessions, known: known)
+    print("Workspaces (\(known.count) known projects):")
+    for w in tree.workspaces {
+        let live = w.repos.map { "\($0.name) (\($0.sessions.count))" }
+        print("  \(w.name) [\((w.id as NSString).abbreviatingWithTildeInPath)]: " + (live + w.idle.map(\.name)).joined(separator: ", "))
+    }
+    let loose = tree.loose.map { "\($0.name) (\($0.sessions.count))" } + tree.looseIdle.map(\.name)
+    if !loose.isEmpty { print("  (no workspace): " + loose.joined(separator: ", ")) }
+    print("Automatic layout: \(StageMode.auto(sessions: sessions.count, repos: tree.repos.count, topLevel: tree.topLevelCount).rawValue)")
     let brain = Brain()
     print("claude: \(brain.claudePath ?? "not found")")
     let tasks = TaskStore(fileURL: TaskStore.defaultFileURL)

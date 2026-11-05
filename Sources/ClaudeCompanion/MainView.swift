@@ -18,6 +18,18 @@ struct MainView: View {
         }
         .background(Theme.bg)
         .foregroundColor(Theme.text)
+        .overlay {
+            if model.switcherOpen {
+                ZStack(alignment: .top) {
+                    Color.black.opacity(0.45)
+                        .contentShape(Rectangle())
+                        .onTapGesture { model.switcherOpen = false }
+                    SwitcherView().padding(.top, 72)
+                }
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.15), value: model.switcherOpen)
         .environment(\.colorScheme, .dark)
         .environment(\.animating, model.mainVisible)
         .focusEffectDisabled()
@@ -49,31 +61,47 @@ struct HeaderBar: View {
 
     var body: some View {
         HStack(spacing: 16) {
-            Text(L("Companion")).font(.system(size: 13, weight: .semibold))
-            HStack(spacing: 8) {
-                ForEach(counts, id: \.0) { status, text in
-                    StatusChip(status: status, text: text)
+            Text(L("Companion")).font(.system(size: 13, weight: .semibold)).fixedSize()
+            // The counts in words when there's room, as icon and number when there isn't.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    ForEach(counts, id: \.0) { status, text in StatusChip(status: status, text: text).fixedSize() }
+                }
+                HStack(spacing: 6) {
+                    ForEach(counts, id: \.0) { status, text in
+                        StatusChip(status: status, text: text.split(separator: " ").first.map(String.init) ?? text)
+                            .fixedSize()
+                            .help(text)
+                    }
                 }
             }
-            Spacer()
+            Spacer(minLength: 8)
+            HStack(spacing: 16) {
             if !model.hooksInstalled {
                 Text(L("Status hooks not installed"))
                     .font(.system(size: 12))
                     .foregroundColor(SessionStatus.needs.color)
                     .help(L("Run scripts/install-hooks.sh so “needs you” shows up."))
             }
-            if model.canGroupByProject {
-                Button { model.groupByProject.toggle() } label: {
-                    Image(systemName: model.groupByProject ? "folder.fill" : "folder")
-                        .font(.system(size: 13))
-                        .foregroundColor(model.groupByProject ? Theme.text : Theme.muted)
-                        .frame(width: 16)
+            Button { model.openSwitcher() } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                    Text("⌘K").font(Theme.mono(11)).foregroundColor(Theme.muted)
                 }
-                .buttonStyle(ChromeButtonStyle())
-                .help(model.groupByProject ? ui("Grouped by project: click to show them all together",
-                                                "Nach Projekt gruppiert: klicken, um alle zusammen zu zeigen")
-                                           : ui("Group the sessions by project", "Sessions nach Projekt gruppieren"))
+                .font(.system(size: 13))
             }
+            .buttonStyle(ChromeButtonStyle())
+            .help(ui("Go to a session or project (⌘K)", "Zu einer Session oder einem Projekt (⌘K)"))
+            Button { LayoutMenu.popUp(model) } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: model.layoutChoice == .auto ? LayoutChoice.of(model.stageMode).symbol : model.layoutChoice.symbol)
+                    Text(model.layoutChoice == .auto ? ui("Auto", "Auto") : model.stageMode.label).lineLimit(1)
+                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold)).foregroundColor(Theme.muted)
+                }
+                .font(.system(size: 13))
+            }
+            .buttonStyle(ChromeButtonStyle())
+            .help(ui("Layout, workspaces and Ghostty windows", "Layout, Workspaces und Ghostty-Fenster"))
             Button { model.showTodos.toggle() } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "checklist")
@@ -104,6 +132,8 @@ struct HeaderBar: View {
             }
             .buttonStyle(ChromeButtonStyle())
             .help(L("What you can say"))
+            }
+            .fixedSize()
         }
         .padding(.leading, 84)
         .padding(.trailing, 16)
@@ -213,32 +243,41 @@ struct StageView: View {
         GeometryReader { geo in
             let drawer: CGFloat = model.selectedId != nil ? model.detailWidth : 0
             let leading: CGFloat = model.showTodos ? model.sidebarWidth : 0
-            let groups = model.projectGroups
+            let mode = model.stageMode
             ZStack(alignment: .topLeading) {
                 // Clicking the background takes focus off the task list, so Space talks again.
                 Color.clear
                     .contentShape(Rectangle())
                     .onTapGesture { NSApp.keyWindow?.makeFirstResponder(nil) }
-                if let groups {
+                switch mode {
+                case .sidebar:
+                    SidebarStage()
+                        .frame(width: max(320, geo.size.width - drawer - leading),
+                               height: max(300, geo.size.height - model.overlayHeight))
+                        .offset(x: leading)
+                case .graph:
                     // Room for the legend in the bottom corner when it shows.
                     let legend: CGFloat = model.overlayHeight == 0 && !model.showTodos ? 30 : 0
                     let stage = CGRect(x: leading, y: 0,
                                        width: max(320, geo.size.width - drawer - leading),
                                        height: max(300, geo.size.height - model.overlayHeight - legend))
-                    graph(GraphLayout(groups: groups, collapsed: model.collapsedProjects, stage: stage), groups, stage: stage)
-                } else {
+                    graph(stage: stage)
+                case .orbit:
                     orbit(OrbitLayout(size: geo.size, sessions: model.sessions, drawer: drawer,
                                       bottom: model.overlayHeight, leading: leading))
                 }
             }
             .animation(StageView.spring, value: model.sessions.map(\.id))
-            .animation(StageView.spring, value: groups?.map(\.id))
+            .animation(StageView.spring, value: model.tree.repos.map(\.id))
             .animation(StageView.spring, value: model.collapsedProjects)
             .animation(StageView.spring, value: model.selectedId != nil)
             .animation(StageView.spring, value: model.showTodos)
             .animation(StageView.spring, value: model.overlayHeight)
+            .animation(.easeOut(duration: 0.25), value: mode)
             .overlay(alignment: .bottomLeading) {
-                if model.overlayHeight == 0 && !model.showTodos { Legend().padding(.leading, 20).padding(.bottom, 16) }
+                if model.overlayHeight == 0 && !model.showTodos && mode != .sidebar {
+                    Legend().padding(.leading, 20).padding(.bottom, 16)
+                }
             }
             .overlay(alignment: .leading) {
                 if model.showTodos { TodoPanel().transition(.move(edge: .leading)) }
@@ -262,7 +301,7 @@ struct StageView: View {
             .frame(width: lay.rx * 2, height: lay.ry * 2)
             .position(lay.center)
         ForEach(model.sessions) { s in
-            let style = cardStyle(s)
+            let style = model.cardStyle(s)
             LineShape(from: lay.center, to: lay.point(s.id))
                 .stroke(lineColor(s, style), lineWidth: style.highlight != nil ? 2 : 1)
         }
@@ -287,76 +326,76 @@ struct StageView: View {
 
     // MARK: graph
 
-    /// Drawn at the graph's own size, scaled down (if it has to be) to fit the stage, and
-    /// scrolling when even that isn't enough.
+    /// The graph on a canvas you can pan and zoom: it starts as big as fits (but readable).
     @ViewBuilder
-    private func graph(_ lay: GraphLayout, _ groups: [ProjectGroup], stage: CGRect) -> some View {
+    private func graph(stage: CGRect) -> some View {
+        let tree = model.tree
+        let items = GraphItem.items(tree, collapsed: model.collapsedProjects)
+        let lay = GraphLayout(items: items, stage: stage)
+        let nodes = GraphNodeInfo.all(tree, collapsed: model.collapsedProjects)
+        let members = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, $0.sessions) })
         let byId = Dictionary(uniqueKeysWithValues: model.sessions.map { ($0.id, $0) })
-        let content = ZStack(alignment: .topLeading) {
-            ForEach(lay.edges) { e in
-                let (color, width) = edgeStyle(e, groups: groups, sessions: byId)
-                EdgeShape(from: e.from, to: e.to, elbow: e.elbow).stroke(color, lineWidth: width)
-            }
-            AvatarView(mode: model.avatar, size: lay.avatarSize, level: { model.voiceLevel() })
-                .position(lay.avatar)
-                .onTapGesture { _ = model.escape() }
-            if lay.showsCaption {
-                avatarCaption.position(x: lay.avatar.x, y: lay.avatar.y + lay.avatarSize / 2 + 34)
-            }
-            ForEach(groups) { g in
-                let styles = g.sessions.map(cardStyle)
-                ProjectNode(group: g, collapsed: model.collapsedProjects.contains(g.id),
-                            highlight: styles.first { $0.highlight != nil }?.highlight,
-                            dimmed: styles.allSatisfy(\.dimmed))
-                    .position(lay.node(g.id))
-                ForEach(g.sessions) { s in
+        // Cards beside a folded workspace say which project they're in.
+        let floating = Set(items.filter { $0.kind == .workspace }.flatMap(\.cards))
+        ZoomCanvas(size: lay.size, autoScale: lay.scale, fitScale: lay.fitScale, stage: stage.size) {
+            ZStack(alignment: .topLeading) {
+                ForEach(lay.edges) { e in
+                    let (color, width) = edgeStyle(e, members: members, sessions: byId)
+                    EdgeShape(from: e.from, to: e.to, elbow: e.elbow).stroke(color, lineWidth: width)
+                }
+                AvatarView(mode: model.avatar, size: lay.avatarSize, level: { model.voiceLevel() })
+                    .position(lay.avatar)
+                    .onTapGesture { _ = model.escape() }
+                if lay.showsCaption {
+                    avatarCaption.position(x: lay.avatar.x, y: lay.avatar.y + lay.avatarSize / 2 + 34)
+                }
+                ForEach(nodes) { n in
+                    if let p = lay.node(n.id) {
+                        let styles = n.sessions.map(model.cardStyle)
+                        GraphNode(id: n.id, kind: n.kind, name: n.name, path: n.path, sessions: n.sessions, idle: n.idle,
+                                  collapsed: model.collapsedProjects.contains(n.id),
+                                  highlight: styles.first { $0.highlight != nil }?.highlight,
+                                  dimmed: !styles.isEmpty && styles.allSatisfy(\.dimmed))
+                            .position(p)
+                            .transition(.opacity)
+                    }
+                }
+                ForEach(model.sessions) { s in
                     if let p = lay.card(s.id) {
-                        card(s).frame(width: GraphLayout.cardW).position(p)
+                        card(s, place: floating.contains(s.id) ? s.place : nil).frame(width: GraphLayout.cardW).position(p)
                             .transition(.opacity.combined(with: .scale(scale: 0.92)))
                     }
                 }
-            }
-        }
-        .frame(width: lay.size.width, height: lay.size.height, alignment: .topLeading)
-        .scaleEffect(lay.scale, anchor: .topLeading)
-        .frame(width: lay.size.width * lay.scale, height: lay.size.height * lay.scale, alignment: .topLeading)
-        Group {
-            if lay.scrolls {
-                ScrollView(.vertical, showsIndicators: true) {
-                    content.padding(.vertical, GraphLayout.margin).frame(maxWidth: .infinity)
-                }
-            } else {
-                content.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .frame(width: stage.width, height: stage.height)
         .offset(x: stage.minX, y: stage.minY)
     }
 
-    /// An edge to a session takes the session's look; one to a project, its most pressing session's.
-    private func edgeStyle(_ e: GraphEdge, groups: [ProjectGroup], sessions: [String: Session]) -> (Color, CGFloat) {
+    /// An edge to a session takes the session's look; one to a node, its most pressing session's.
+    private func edgeStyle(_ e: GraphEdge, members: [String: [Session]], sessions: [String: Session]) -> (Color, CGFloat) {
         if let id = e.session, let s = sessions[id] {
-            let style = cardStyle(s)
+            let style = model.cardStyle(s)
             return (lineColor(s, style), style.highlight != nil ? 2 : 1.2)
         }
-        let members = groups.first { $0.id == e.group }?.sessions ?? []
-        if let lit = members.first(where: { cardStyle($0).highlight != nil }) { return (lineColor(lit, cardStyle(lit)), 2) }
-        return (members.contains { $0.status == .needs } ? SessionStatus.needs.color.opacity(0.55) : Theme.line, 1.2)
+        let list = members[e.group] ?? []
+        if let lit = list.first(where: { model.cardStyle($0).highlight != nil }) { return (lineColor(lit, model.cardStyle(lit)), 2) }
+        return (list.contains { $0.status == .needs } ? SessionStatus.needs.color.opacity(0.55) : Theme.line, 1.2)
     }
 
     // MARK: pieces
 
-    private func card(_ s: Session) -> some View {
-        let style = cardStyle(s)
+    private func card(_ s: Session, place: String? = nil) -> some View {
+        let style = model.cardStyle(s)
         return SessionCard(session: s, menuCount: model.menuPanel?.openCount(forSession: s.id) ?? 0,
                            selected: model.selectedId == s.id,
-                           highlight: style.highlight, dimmed: style.dimmed) { model.select(s.id) }
+                           highlight: style.highlight, dimmed: style.dimmed, place: place) { model.select(s.id) }
     }
 
     private var avatarCaption: some View {
         VStack(spacing: 4) {
-            Text(avatarTitle).font(.system(size: 16, weight: .semibold))
-            Text(avatarSubtitle).font(.system(size: 12)).foregroundColor(Theme.muted).lineLimit(1)
+            Text(model.avatarTitle).font(.system(size: 16, weight: .semibold))
+            Text(model.avatarSubtitle).font(.system(size: 12)).foregroundColor(Theme.muted).lineLimit(1)
         }
         // Lines that pass under the caption stop at its edge instead of crossing the text.
         .padding(.horizontal, 10)
@@ -365,26 +404,29 @@ struct StageView: View {
         .frame(width: 280)
     }
 
-    fileprivate struct CardStyle { var highlight: Color?; var dimmed: Bool }
-
-    private func cardStyle(_ s: Session) -> CardStyle {
-        if let p = model.pending, p.sessionId == s.id { return CardStyle(highlight: Theme.accent, dimmed: false) }
-        if model.listening, let t = model.replyTarget { return CardStyle(highlight: t == s.id ? Theme.listen : nil, dimmed: t != s.id) }
-        if model.listening { return CardStyle(highlight: nil, dimmed: true) }
-        if let ids = model.currentCaptionIds, !ids.isEmpty {
-            return CardStyle(highlight: ids.contains(s.id) ? SessionStatus.done.color : nil, dimmed: !ids.contains(s.id))
-        }
-        return CardStyle(highlight: nil, dimmed: false)
-    }
-
     private func lineColor(_ s: Session, _ style: CardStyle) -> Color {
         if let h = style.highlight { return h }
         if s.status == .needs { return s.status.color.opacity(0.55) }
         return Theme.line
     }
+}
 
-    private var avatarTitle: String {
-        switch model.avatar {
+/// How a card looks while you talk or I speak: lit, or dimmed so the one that matters stands out.
+struct CardStyle { var highlight: Color?; var dimmed: Bool }
+
+extension AppModel {
+    func cardStyle(_ s: Session) -> CardStyle {
+        if let p = pending, p.sessionId == s.id { return CardStyle(highlight: Theme.accent, dimmed: false) }
+        if listening, let t = replyTarget { return CardStyle(highlight: t == s.id ? Theme.listen : nil, dimmed: t != s.id) }
+        if listening { return CardStyle(highlight: nil, dimmed: true) }
+        if let ids = currentCaptionIds, !ids.isEmpty {
+            return CardStyle(highlight: ids.contains(s.id) ? SessionStatus.done.color : nil, dimmed: !ids.contains(s.id))
+        }
+        return CardStyle(highlight: nil, dimmed: false)
+    }
+
+    var avatarTitle: String {
+        switch avatar {
         case .listening: return L("Listening…")
         case .thinking: return L("Thinking…")
         case .speaking: return L("Speaking")
@@ -392,18 +434,40 @@ struct StageView: View {
         }
     }
 
-    private var avatarSubtitle: String {
-        switch model.avatar {
+    var avatarSubtitle: String {
+        switch avatar {
         case .listening:
-            if let t = model.session(model.replyTarget) { return ui("Reply to \(t.spokenName)", "Antwort an \(t.spokenName)") }
+            if let t = session(replyTarget) { return ui("Reply to \(t.spokenName)", "Antwort an \(t.spokenName)") }
             return L("Let go to send")
-        case .thinking: return model.heard.map { "“\($0)”" } ?? L("Working it out")
+        case .thinking: return heard.map { "“\($0)”" } ?? L("Working it out")
         case .speaking: return L("Talk or press Esc to interrupt")
         case .idle:
-            let n = model.sessions.count
-            if model.isMuted { return L("Quiet") + " · " + UIText.watching(n) }
+            let n = sessions.count
+            if isMuted { return L("Quiet") + " · " + UIText.watching(n) }
             return n == 0 ? L("No sessions open") : UIText.watching(n)
         }
+    }
+}
+
+/// A node of the graph, with what it shows.
+struct GraphNodeInfo: Identifiable {
+    let id: String
+    let kind: GraphItem.Kind
+    let name: String
+    let path: String
+    let sessions: [Session]
+    let idle: Int
+
+    static func all(_ tree: ProjectTree, collapsed: Set<String>) -> [GraphNodeInfo] {
+        var out: [GraphNodeInfo] = []
+        for w in tree.workspaces where !w.repos.isEmpty {
+            out.append(GraphNodeInfo(id: w.id, kind: .workspace, name: w.name, path: w.id, sessions: w.sessions, idle: w.idle.count))
+            for g in w.repos {
+                out.append(GraphNodeInfo(id: GraphItem.nodeId(g), kind: .repo, name: g.name, path: g.root, sessions: g.sessions, idle: 0))
+            }
+        }
+        for g in tree.loose { out.append(GraphNodeInfo(id: g.id, kind: .repo, name: g.name, path: g.root, sessions: g.sessions, idle: 0)) }
+        return out
     }
 }
 
@@ -413,6 +477,8 @@ struct SessionCard: View {
     var selected: Bool
     var highlight: Color?
     var dimmed: Bool
+    /// Where it works, instead of its folder's name ("acme › api"), for cards away from their project.
+    var place: String? = nil
     var action: () -> Void
     @State private var hover = false
 
@@ -424,7 +490,7 @@ struct SessionCard: View {
                     Text(session.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                     Text(session.statusLine).font(.system(size: 12)).foregroundColor(session.status.color).lineLimit(1)
                     HStack(spacing: 6) {
-                        Text(session.metaLine).font(Theme.mono()).foregroundColor(Theme.faint).lineLimit(1)
+                        Text(place.map(session.metaLine(place:)) ?? session.metaLine).font(Theme.mono()).foregroundColor(Theme.faint).lineLimit(1)
                         if menuCount > 0 {
                             HStack(spacing: 3) {
                                 Image(systemName: "checklist").font(.system(size: 9, weight: .bold))

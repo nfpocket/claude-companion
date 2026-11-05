@@ -28,7 +28,8 @@ final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
+    static let mainWindowId = "companion.main"
     private var model: AppModel!
     /// Task Tracker, built in: the ☑ menu bar item with its ⌃⌥T popover, reminders and the menu.
     private let taskTracker = TaskTrackerController()
@@ -78,7 +79,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         // Holding Space in the window and then clicking away never delivers the key-up here.
         nc.publisher(for: NSWindow.didResignKeyNotification, object: window)
-            .sink { [weak self] _ in self?.releaseSpace() }
+            .sink { [weak self] _ in
+                self?.releaseSpace()
+                self?.model.windowInFront = false
+            }
+            .store(in: &cancellables)
+        // The automatic layout changes as the window comes to the front, never while you look at it.
+        nc.publisher(for: NSWindow.didBecomeKeyNotification, object: window)
+            .sink { [weak self] _ in
+                guard let model = self?.model else { return }
+                model.windowInFront = true
+                model.refreshAutoLayout(force: true)
+                // Coming back (say after allowing access to Documents in the privacy prompt):
+                // look for projects again, at most twice a minute.
+                if Date().timeIntervalSince(model.lastFolderScan) > 30 { model.loadFolders() }
+            }
             .store(in: &cancellables)
 
         // Debug aid: post "local.claude-companion.snapshot" and the app writes PNGs of its
@@ -113,6 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 try? png.write(to: dir.appendingPathComponent(name))
             }
         }
+        if Demo.large { captureLarge(write); return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [self] in
             write(window.contentView?.superview ?? window.contentView, "orbit.png")
             // The detail of a session with menu items, both tabs (for checking the layout).
@@ -154,6 +170,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    /// The large demo: the sidebar, a workspace in it, the graph, ⌘K and the pill.
+    private func captureLarge(_ write: @escaping (NSView?, String) -> Void) {
+        let shots: [(String, () -> Void)] = [
+            ("sidebar.png", {}),
+            ("sidebar-workspace.png", { [self] in model.nav = .workspace(("~/Projects/acme" as NSString).expandingTildeInPath) }),
+            ("graph.png", { [self] in
+                model.choose(.graph)
+                model.foldOthers(than: ("~/Projects/acme" as NSString).expandingTildeInPath)
+            }),
+            ("graph-open.png", { [self] in model.collapsedProjects = [] }),
+            ("graph-fit.png", { [self] in model.canvas(.fit) }),
+            ("switcher.png", { [self] in
+                model.choose(.sidebar)
+                model.openSwitcher()
+                model.switcherQuery = "acme app"
+            }),
+            ("orbit-many.png", { [self] in
+                model.switcherOpen = false
+                model.choose(.orbit)
+            }),
+        ]
+        func step(_ i: Int) {
+            guard i < shots.count else {
+                model.pillExpanded = true
+                model.pillOpen = [("~/Projects/lab" as NSString).expandingTildeInPath]
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
+                    let size = PillView.size(model, metrics)
+                    pill.setFrame(NSRect(origin: pill.frame.origin, size: size), display: true)
+                    pillHost.layoutSubtreeIfNeeded()
+                    write(pillHost, "pill-many.png")
+                    NSApp.terminate(nil)
+                }
+                return
+            }
+            shots[i].1()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [self] in
+                write(window.contentView?.superview ?? window.contentView, shots[i].0)
+                step(i + 1)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { step(0) }
+    }
+
     private func writeSnapshots() {
         let dir = Paths.ttsCache.deletingLastPathComponent()
         for (name, view) in [("main", window.contentView), ("pill", pill.contentView)] {
@@ -168,6 +227,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        // Ghostty's tabs get their own titles back.
+        model?.clearTabNames()
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         showWindow()
         return true
@@ -180,6 +244,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                           styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                           backing: .buffered, defer: false)
         window.title = "Claude Companion"
+        window.identifier = NSUserInterfaceItemIdentifier(AppDelegate.mainWindowId)
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = true
@@ -255,6 +320,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return e
         }
         guard e.type == .keyDown else { return e }
+        // The ⌘K switcher: arrows move, Return opens (⌘ Return: show the session here).
+        if model.switcherOpen, e.window === window {
+            switch e.keyCode {
+            case 125: model.switcherMove(1); return nil
+            case 126: model.switcherMove(-1); return nil
+            case 36, 76: model.switcherRun(here: e.modifierFlags.contains(.command)); return nil
+            default: break
+            }
+        }
         if e.keyCode == 53 { // Esc
             // In the chat field, Esc first leaves the field (the draft stays).
             if e.window === window, window.firstResponder is ChatTextView, model.pending == nil, !model.speaking {
@@ -263,7 +337,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             return model.escape() ? nil : e
         }
-        if e.modifierFlags.contains(.command), !e.modifierFlags.contains(.shift),
+        // ⌘+ / ⌘= and ⌘−: zoom the graph, whatever the keyboard layout puts + on.
+        if e.window === window, model.stageMode == .graph,
+           e.modifierFlags.intersection([.command, .option, .control]) == .command, let c = e.charactersIgnoringModifiers {
+            if c == "+" || c == "=" { model.canvas(.zoomIn); return nil }
+            if c == "-" { model.canvas(.zoomOut); return nil }
+        }
+        if e.modifierFlags.intersection([.command, .shift, .option, .control]) == .command,
            let c = e.charactersIgnoringModifiers, let n = Int(c), (1...9).contains(n), e.window === window {
             model.focusTab(n)
             return nil
@@ -295,6 +375,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         editItem.submenu = edit
         main.addItem(editItem)
 
+        // View: the layout (rebuilt each time it opens, so its checkmarks are current).
+        let viewItem = NSMenuItem()
+        let view = NSMenu(title: ui("View", "Darstellung"))
+        view.delegate = self
+        LayoutMenu.fill(view, model: model, menuBar: true)
+        viewItem.submenu = view
+        main.addItem(viewItem)
+
         let winItem = NSMenuItem()
         let win = NSMenu(title: ui("Window", "Fenster"))
         let show = NSMenuItem(title: ui("Show Companion", "Companion zeigen"), action: #selector(showFromMenu), keyEquivalent: "0")
@@ -309,6 +397,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func showFromMenu() { showWindow() }
+
+    /// The View menu, filled afresh as it opens (and before its shortcuts are matched).
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu.title == ui("View", "Darstellung") else { return }
+        menu.removeAllItems()
+        LayoutMenu.fill(menu, model: model, menuBar: true)
+    }
 
     // MARK: pill
 
@@ -358,7 +453,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if model.pillVisible != (!orbitInFront && !still) { model.pillVisible = !orbitInFront && !still }
         if orbitInFront {
             if pill.isVisible { pill.orderOut(nil) }
-            if model.pillExpanded { model.pillExpanded = false }
+            // (The demo opens the pill for its screenshot while the window may be in front.)
+            if model.pillExpanded && !Demo.on { model.pillExpanded = false }
             return
         }
         let size = PillView.size(model, metrics)

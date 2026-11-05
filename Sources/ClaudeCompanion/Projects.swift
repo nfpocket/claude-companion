@@ -6,6 +6,8 @@ struct ProjectGroup: Identifiable, Equatable {
     let root: String
     var name: String
     var sessions: [Session]
+    /// The workspace folder it's in (see `Workspaces`), nil outside one.
+    var workspace: String? = nil
     var id: String { root }
 }
 

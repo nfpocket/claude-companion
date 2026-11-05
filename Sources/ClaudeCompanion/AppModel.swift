@@ -112,12 +112,75 @@ final class AppModel: ObservableObject {
     // MARK: settings
     @Published var speakOnDone: Bool { didSet { defaults.set(speakOnDone, forKey: "speakOnDone") } }
     @Published var onlyNeeds: Bool { didSet { defaults.set(onlyNeeds, forKey: "onlyNeeds") } }
-    /// Sessions in more than one project are grouped by project in the orbit and the pill.
-    @Published var groupByProject: Bool { didSet { defaults.set(groupByProject, forKey: "groupByProject") } }
-    /// Projects whose sessions are folded away (by project root).
+    /// Projects and workspaces folded away in the graph (by folder).
     @Published var collapsedProjects: Set<String> {
         didSet { defaults.set(Array(collapsedProjects).sorted(), forKey: "collapsedProjects") }
     }
+
+    // MARK: layout and projects
+    /// How the window shows the sessions: chosen by how many there are, or one layout always.
+    @Published var layoutChoice: LayoutChoice {
+        didSet {
+            defaults.set(layoutChoice.rawValue, forKey: "layoutChoice")
+            canvas = CanvasView()
+        }
+    }
+    /// The layout "automatic" stands for right now. It only changes while the window isn't in
+    /// front (or as it comes to the front), never under your eyes.
+    @Published var autoLayout: StageMode = .orbit
+    var stageMode: StageMode { layoutChoice.mode ?? autoLayout }
+    /// Set by the app delegate: the companion's window is the key window.
+    var windowInFront = false
+    var layoutPrimed = false
+    /// Every project by workspace (the folder it's in, as in Finder).
+    @Published private(set) var tree = ProjectTree()
+    /// Projects without a session that the companion knows of (from Claude Code's history and
+    /// the workspace folders), to list them too.
+    @Published private(set) var knownRepos: [String] = []
+    @Published var useWorkspaces: Bool { didSet { defaults.set(useWorkspaces, forKey: "useWorkspaces"); publish() } }
+    /// "acme-api" in the acme workspace reads "api".
+    @Published var dropPrefix: Bool { didSet { defaults.set(dropPrefix, forKey: "dropPrefix"); publish() } }
+    /// The folder whose subfolders are the workspaces; nil works it out.
+    @Published var codeFolder: String? {
+        didSet { defaults.set(codeFolder, forKey: "codeFolder"); loadFolders(); publish() }
+    }
+    /// Workspaces and projects pinned to the top of the sidebar.
+    @Published var pinned: [String] { didSet { defaults.set(pinned, forKey: "pinned") } }
+    /// Workspaces the sidebar leaves out while none of their projects has a session.
+    @Published var hiddenWhenEmpty: Set<String> {
+        didSet { defaults.set(Array(hiddenWhenEmpty).sorted(), forKey: "hiddenWhenEmpty") }
+    }
+    /// What the sidebar layout shows.
+    @Published var nav: NavItem { didSet { defaults.set(nav.key, forKey: "nav") } }
+    /// Workspaces opened in the sidebar's tree.
+    @Published var navOpen: Set<String> { didSet { defaults.set(Array(navOpen).sorted(), forKey: "navOpen") } }
+    /// Workspaces whose sessions are listed in the expanded pill (the rest are one line each).
+    @Published var pillOpen: Set<String> = []
+    /// The graph canvas's zoom and pan.
+    @Published var canvas = CanvasView()
+    @Published var canvasCommand: CanvasRequest?
+    /// The ⌘K switcher: open, what's typed, and the highlighted line.
+    @Published var switcherOpen = false
+    @Published var switcherQuery = ""
+    @Published var switcherIndex = 0
+    /// New sessions open in the Ghostty window that holds their workspace's sessions.
+    @Published var ghosttyPerWorkspace: Bool { didSet { defaults.set(ghosttyPerWorkspace, forKey: "ghosttyPerWorkspace") } }
+    /// Ghostty tabs are named after their project and session: "api · Release PR".
+    @Published var nameTabs: Bool {
+        didSet {
+            defaults.set(nameTabs, forKey: "nameTabs")
+            syncTabNames()
+        }
+    }
+    /// The tab titles the companion set in Ghostty, by tab id. Kept on disk, so tabs named
+    /// before a crash still get their own title back.
+    var appliedTabNames: [String: String] = [:] {
+        didSet { if !Demo.on { defaults.set(appliedTabNames, forKey: "appliedTabNames") } }
+    }
+    /// A tab-title script is on its way; the next change waits for it.
+    var tabNamesInFlight = false
+    /// When the folders were last scanned for projects.
+    var lastFolderScan = Date.distantPast
     @Published var mutedUntil: Date? { didSet { defaults.set(mutedUntil?.timeIntervalSince1970, forKey: "mutedUntil") } }
     @Published var voiceId: String {
         didSet {
@@ -178,12 +241,14 @@ final class AppModel: ObservableObject {
 
     private let defaults = UserDefaults.standard
     private var raw: [Session] = []
-    private var snap = GhosttySnapshot()
+    private(set) var snap = GhosttySnapshot()
+    /// Ghostty has been asked once which tab holds what (tab names wait for that).
+    private(set) var ghosttyPolled = false
     private var seenAt: [String: Date] = [:]
     private var known: [String: SessionStatus] = [:]
     private var primed = false
     /// Set once the session store has reported: a status seen before that is not a change.
-    private var storeReported = false
+    private(set) var storeReported = false
     private var summaryKeys: [String: String] = [:]
     private var diskSummaries: [String: [String: String]] = [:]
     private var summaryQueue: [String] = []
@@ -219,8 +284,20 @@ final class AppModel: ObservableObject {
         let tab = DetailTab(rawValue: defaults.string(forKey: "detailTab") ?? "") ?? .overview
         detailTab = tab == .menu ? .overview : tab
         onlyNeeds = defaults.object(forKey: "onlyNeeds") as? Bool ?? false
-        groupByProject = defaults.object(forKey: "groupByProject") as? Bool ?? true
         collapsedProjects = Set(defaults.stringArray(forKey: "collapsedProjects") ?? [])
+        // "Show them all together" (the old folder switch, off) was the orbit.
+        let legacyOrbit = (defaults.object(forKey: "groupByProject") as? Bool) == false
+        layoutChoice = LayoutChoice(rawValue: defaults.string(forKey: "layoutChoice") ?? "") ?? (legacyOrbit ? .orbit : .auto)
+        useWorkspaces = defaults.object(forKey: "useWorkspaces") as? Bool ?? true
+        dropPrefix = defaults.object(forKey: "dropPrefix") as? Bool ?? true
+        codeFolder = defaults.string(forKey: "codeFolder")
+        pinned = defaults.stringArray(forKey: "pinned") ?? []
+        hiddenWhenEmpty = Set(defaults.stringArray(forKey: "hiddenWhenEmpty") ?? [])
+        nav = NavItem(key: defaults.string(forKey: "nav") ?? "") ?? .needs
+        navOpen = Set(defaults.stringArray(forKey: "navOpen") ?? [])
+        ghosttyPerWorkspace = defaults.object(forKey: "ghosttyPerWorkspace") as? Bool ?? true
+        nameTabs = defaults.object(forKey: "nameTabs") as? Bool ?? true
+        appliedTabNames = defaults.dictionary(forKey: "appliedTabNames") as? [String: String] ?? [:]
         if let t = defaults.object(forKey: "mutedUntil") as? Double { mutedUntil = Date(timeIntervalSince1970: t) }
         voiceId = defaults.string(forKey: "voiceId") ?? AppModel.defaultVoice
         voiceIdDE = defaults.string(forKey: "voiceIdDE") ?? AppModel.defaultVoiceDE
@@ -236,8 +313,17 @@ final class AppModel: ObservableObject {
             // Screenshots show the defaults, never this Mac's settings or history.
             speakOnDone = true
             onlyNeeds = false
-            groupByProject = true
             collapsedProjects = []
+            layoutChoice = Demo.layout ?? .auto
+            useWorkspaces = true
+            dropPrefix = true
+            codeFolder = nil
+            pinned = Demo.pinned
+            hiddenWhenEmpty = []
+            nav = .needs
+            navOpen = Demo.navOpen
+            ghosttyPerWorkspace = true
+            nameTabs = false
             mutedUntil = nil
             voiceId = AppModel.defaultVoice
             voiceIdDE = AppModel.defaultVoiceDE
@@ -262,19 +348,16 @@ final class AppModel: ObservableObject {
 
     var selected: Session? { sessions.first { $0.id == selectedId } }
 
-    /// The sessions by project, when they run in more than one and grouping is on (nil otherwise).
-    var projectGroups: [ProjectGroup]? { groupByProject ? Projects.grouping(sessions) : nil }
-
-    /// Whether grouping by project would show anything right now (for the switch in the header).
-    var canGroupByProject: Bool { Projects.grouping(sessions) != nil }
+    /// The sessions by project, for the pill, when they run in more than one (nil otherwise).
+    var projectGroups: [ProjectGroup]? { Projects.grouping(sessions) }
 
     func toggleCollapsed(_ root: String) {
         if collapsedProjects.contains(root) { collapsedProjects.remove(root) } else { collapsedProjects.insert(root) }
     }
 
-    /// A new Ghostty tab with a plain shell in `folder`.
+    /// A new Ghostty tab with a plain shell in `folder` (in its workspace's window).
     func openTerminal(in folder: String) {
-        ghostty.newTab(cwd: folder, input: nil)
+        ghostty.newTab(cwd: folder, input: nil, target: ghosttyTarget(forFolder: folder))
     }
 
     /// The language to talk about a session in.
@@ -340,6 +423,7 @@ final class AppModel: ObservableObject {
         speaker.onError = { [weak self] e in self?.speechFailed(e) }
         if Demo.on {
             speaker.silent = true
+            knownRepos = Demo.knownRepos()
             store.onUpdate = { [weak self] list in
                 self?.raw = list
                 self?.storeReported = true
@@ -393,7 +477,7 @@ final class AppModel: ObservableObject {
 
     // MARK: sessions
 
-    private func publish() {
+    func publish() {
         var list = raw
         for i in list.indices {
             if let tty = list[i].tty, let t = snap.terms[tty] { list[i].tabIndex = t.tabIndex }
@@ -408,8 +492,16 @@ final class AppModel: ObservableObject {
             if ta != tb { return ta < tb }
             return a.id < b.id
         }
+        // Projects by workspace, and each session's place in them ("acme › api").
+        var t = Workspaces.tree(list, known: knownRepos, enabled: useWorkspaces, dropPrefix: dropPrefix, codeFolder: codeFolder)
+        let places = Dictionary(t.repos.flatMap { g in g.sessions.map { ($0.id, t.place(ofRepo: g.root)) } }, uniquingKeysWith: { a, _ in a })
+        for i in list.indices { list[i].place = places[list[i].id] ?? list[i].folder }
+        t.mapSessions { s in var s = s; s.place = places[s.id] ?? s.folder; return s }
         detectTransitions(list)
         if list != sessions { sessions = list }
+        if t != tree { tree = t }
+        refreshAutoLayout()
+        syncTabNames()
         deliverPendingPastes()
         if let sel = selectedId, !list.contains(where: { $0.id == sel }) { selectedId = nil }
         scheduleSummaries(list)
@@ -419,6 +511,7 @@ final class AppModel: ObservableObject {
         ghostty.snapshot { [weak self] s in
             guard let self else { return }
             self.snap = s
+            if s.ok { self.ghosttyPolled = true }
             // Looking at a finished session's tab counts as having seen it.
             if Ghostty.isFrontmost, let tty = s.frontTTY,
                let sess = self.raw.first(where: { $0.tty == tty }),
@@ -877,6 +970,7 @@ final class AppModel: ObservableObject {
             replyTarget = nil
             return true
         }
+        if switcherOpen { switcherOpen = false; return true }
         if pending != nil { cancelPending(); return true }
         if speaker.isBusy || !captions.isEmpty { stopSpeaking(); return true }
         if showHelp { showHelp = false; return true }
@@ -1029,8 +1123,11 @@ final class AppModel: ObservableObject {
         markSeen(s.id)
     }
 
+    /// ⌘1…9: the session in that tab, in Ghostty's front window when there are several.
     func focusTab(_ n: Int) {
-        if let s = sessions.first(where: { $0.tabIndex == n }) { focus(s) }
+        let inTab = sessions.filter { $0.tabIndex == n }
+        let front = inTab.first { s in s.tty.flatMap { snap.terms[$0]?.windowId } == snap.frontWindow }
+        if let s = front ?? inTab.first { focus(s) }
     }
 
     func openNewSession(in folder: String? = nil) {
@@ -1092,7 +1189,7 @@ final class AppModel: ObservableObject {
         case .newSession:
             let prompt = p.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
             let cmd = prompt.isEmpty ? "claude" : "claude " + Self.shellQuote(prompt)
-            ghostty.newTab(cwd: p.folder, input: cmd)
+            ghostty.newTab(cwd: p.folder, input: cmd, target: ghosttyTarget(forFolder: p.folder))
             flash(ui("Starting a session in ", "Starte eine Session in ") + (p.folder as NSString).lastPathComponent)
             store.refreshSoon()
             return
@@ -1186,7 +1283,7 @@ final class AppModel: ObservableObject {
     /// Starts claude in a new Ghostty tab and puts the todo into its prompt once it's ready.
     func startSession(text: String, in folder: String) {
         let name = (folder as NSString).lastPathComponent
-        ghostty.newTab(cwd: folder, input: "claude") { [weak self] tty in
+        ghostty.newTab(cwd: folder, input: "claude", target: ghosttyTarget(forFolder: folder)) { [weak self] tty in
             guard let self else { return }
             guard let tty else {
                 self.copyToClipboard(text)
@@ -1255,13 +1352,23 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The folders you work in, and from them every project the sidebar lists.
     func loadFolders() {
+        guard !Demo.on else { return }
+        lastFolderScan = Date()
         let current = raw.map(\.cwd)
+        let code = codeFolder
         Task.detached(priority: .utility) {
             let found = AppModel.scanFolders()
+            var seen = Set<String>()
+            let folders = (current + found).filter { !$0.isEmpty && seen.insert($0).inserted }
+            let repos = Workspaces.discover(folders: folders, codeFolder: code)
             await MainActor.run {
-                var seen = Set<String>()
-                self.folders = (current + found).filter { !$0.isEmpty && seen.insert($0).inserted }
+                self.folders = folders
+                if repos != self.knownRepos {
+                    self.knownRepos = repos
+                    self.publish()
+                }
             }
         }
     }

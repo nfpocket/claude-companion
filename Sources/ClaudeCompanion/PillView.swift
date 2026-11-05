@@ -57,11 +57,38 @@ struct PillView: View {
 
     static let sectionHeight: CGFloat = 24
 
+    static let workspaceRowHeight: CGFloat = 38
+
+    /// Too many sessions for a list, in workspaces: what needs you on top, then a line per
+    /// workspace that opens to its sessions.
+    @MainActor static func folded(_ m: AppModel) -> Bool { m.tree.hasWorkspaces && m.sessions.count > maxRows }
+
+    /// Folded: the workspaces' lines (loose projects are one more line), and their sessions
+    /// that aren't already on top.
+    @MainActor static func foldedGroups(_ m: AppModel) -> [(id: String, name: String, sessions: [Session])] {
+        var out = m.tree.workspaces.filter { !$0.repos.isEmpty }.map { (id: $0.id, name: $0.name, sessions: $0.sessions) }
+        let loose = m.tree.loose.flatMap(\.sessions)
+        if !loose.isEmpty { out.append((id: "", name: ui("Other projects", "Andere Projekte"), sessions: loose)) }
+        return out
+    }
+
+    @MainActor static func urgent(_ m: AppModel) -> [Session] { Array(m.sessions.filter(\.isUrgent).prefix(4)) }
+
     /// The session list's height: every row (and project heading) up to `maxRows` rows' worth;
     /// past that it scrolls.
     @MainActor static func listHeight(_ m: AppModel) -> CGFloat {
         let row = rowHeight + 4
         let cap = CGFloat(maxRows) * row
+        if folded(m) {
+            let top = urgent(m)
+            let onTop = Set(top.map(\.id))
+            var h = top.isEmpty ? 0 : sectionHeight + CGFloat(top.count) * row
+            for g in foldedGroups(m) {
+                h += workspaceRowHeight + 4
+                if m.pillOpen.contains(g.id) { h += CGFloat(g.sessions.filter { !onTop.contains($0.id) }.count) * row }
+            }
+            return min(cap, h)
+        }
         guard let groups = m.projectGroups else { return CGFloat(max(1, min(maxRows, m.sessions.count))) * row }
         let shown = groups.filter { !m.collapsedProjects.contains($0.id) }.reduce(0) { $0 + $1.sessions.count }
         return min(cap, CGFloat(groups.count) * sectionHeight + CGFloat(shown) * row)
@@ -254,7 +281,24 @@ struct PillView: View {
             .frame(height: 46)
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 4) {
-                    if let groups = model.projectGroups {
+                    if PillView.folded(model) {
+                        let top = PillView.urgent(model)
+                        let onTop = Set(top.map(\.id))
+                        if !top.isEmpty {
+                            heading(L("Needs you"))
+                            ForEach(top) { session in
+                                Button { model.focus(session) } label: { row(session, place: true) }.buttonStyle(.plain)
+                            }
+                        }
+                        ForEach(PillView.foldedGroups(model), id: \.id) { g in
+                            workspaceRow(g.id, g.name, g.sessions)
+                            if model.pillOpen.contains(g.id) {
+                                ForEach(g.sessions.filter { !onTop.contains($0.id) }) { session in
+                                    Button { model.focus(session) } label: { row(session) }.buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    } else if let groups = model.projectGroups {
                         ForEach(groups) { g in
                             section(g)
                             if !model.collapsedProjects.contains(g.id) {
@@ -286,6 +330,42 @@ struct PillView: View {
         .padding(.bottom, 16)
     }
 
+    private func heading(_ text: String) -> some View {
+        HStack {
+            Text(text.uppercased()).font(.system(size: 10, weight: .bold)).tracking(0.5).foregroundColor(Theme.faint)
+            Spacer()
+        }
+        .padding(.horizontal, 4)
+        .frame(height: PillView.sectionHeight - 4, alignment: .bottom)
+    }
+
+    /// One line for a workspace: how its sessions stand. Click it for the sessions.
+    private func workspaceRow(_ id: String, _ name: String, _ sessions: [Session]) -> some View {
+        let open = model.pillOpen.contains(id)
+        return Button {
+            if open { model.pillOpen.remove(id) } else { model.pillOpen.insert(id) }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold)).foregroundColor(Theme.faint)
+                    .rotationEffect(.degrees(open ? 90 : 0))
+                    .frame(width: 10)
+                Image(systemName: id.isEmpty ? "folder" : "square.stack.3d.up").font(.system(size: 11))
+                    .foregroundColor(id.isEmpty ? Theme.muted : Theme.accentLight)
+                Text(name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                Text("\(sessions.count)").font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.faint)
+                Spacer(minLength: 6)
+                Tally(sessions: sessions)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: PillView.workspaceRowHeight)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color(hex: 0x0E0F11)))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .help(id.isEmpty ? "" : (id as NSString).abbreviatingWithTildeInPath)
+    }
+
     /// A project's heading over its sessions; click it to fold them away (the same as in the window).
     private func section(_ g: ProjectGroup) -> some View {
         let collapsed = model.collapsedProjects.contains(g.id)
@@ -313,7 +393,8 @@ struct PillView: View {
         .help((g.root as NSString).abbreviatingWithTildeInPath)
     }
 
-    private func row(_ s: Session) -> some View {
+    /// A session; `place` says where it works ("acme › api") before its status.
+    private func row(_ s: Session, place: Bool = false) -> some View {
         HStack(spacing: 10) {
             ZStack {
                 Circle().fill(s.status.color.opacity(0.18))
@@ -322,7 +403,13 @@ struct PillView: View {
             .frame(width: 28, height: 28)
             VStack(alignment: .leading, spacing: 1) {
                 Text(s.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                Text(s.statusLine).font(.system(size: 12)).foregroundColor(s.status.color).lineLimit(1)
+                HStack(spacing: 0) {
+                    if place {
+                        Text(s.place + " · ").font(Theme.mono(11)).foregroundColor(Theme.muted)
+                    }
+                    Text(s.statusLine).font(.system(size: 12)).foregroundColor(s.status.color)
+                }
+                .lineLimit(1)
             }
             Spacer(minLength: 0)
             if s.unseen { Circle().fill(s.status.color).frame(width: 8, height: 8) }

@@ -5,7 +5,7 @@ A companion for the Claude Code sessions you run in Ghostty. Every open session 
 It also has [Task Tracker](https://github.com/nfpocket/task-tracker) built in: your task list in the menu bar (⌃⌥T), and the menu of checks and ideas agents leave on their PRs, shown on the session that opened each PR.
 
 <p>
-  <img src="screenshots/orbit.png" width="600" alt="The window: sessions by project around the avatar, todos from Task Tracker on the left">
+  <img src="screenshots/orbit.png" width="600" alt="The window: sessions around the avatar, todos from Task Tracker on the left">
   <img src="screenshots/pill.png" width="220" alt="The companion opened from the notch">
 </p>
 
@@ -26,7 +26,7 @@ Voice needs an ElevenLabs API key in the login Keychain:
 security add-generic-password -a "$USER" -s elevenlabs -w
 ```
 
-Without it the companion speaks with the Mac voice and voice input is off. macOS asks for the microphone the first time you hold Space, and for permission to control Ghostty the first time the companion talks to it. The build is signed with your Apple Development identity when you have one, so these answers survive rebuilds; with ad-hoc signing (no identity, or `CODESIGN_IDENTITY=-`) macOS asks again after each build.
+Without it the companion speaks with the Mac voice and voice input is off. macOS asks for the microphone the first time you hold Space, for permission to control Ghostty the first time the companion talks to it, and for access to Documents (or Desktop) when your projects live there: the companion lists the other projects in each workspace folder. Without that access, workspaces still work, but projects there without a session aren’t listed. The build is signed with your Apple Development identity when you have one, so these answers survive rebuilds; with ad-hoc signing (no identity, or `CODESIGN_IDENTITY=-`) macOS asks again after each build.
 
 ## Keys
 
@@ -37,7 +37,10 @@ Without it the companion speaks with the Mac voice and voice input is off. macOS
 | Space or ⌥ Space (tap) | Stop the companion mid-sentence |
 | Esc | Cancel a countdown, stop talking, close the detail |
 | Return | Do the proposed action now |
-| ⌘1 – ⌘9 | Open that Ghostty tab |
+| ⌘1 – ⌘9 | Open that Ghostty tab (in Ghostty's front window, when there are several) |
+| ⌘K | Go to a session, project or workspace |
+| ⌃⌘0 – ⌃⌘3 | Layout: automatic, orbit, workspace graph, sidebar |
+| ⌘+, ⌘−, ⌥⌘0 | Zoom the graph in, out, or to fit the window |
 | ⌘0 | Show the window |
 | ⌃⌥T | Open or close the task list, from any app |
 
@@ -47,14 +50,35 @@ In the task list: Return adds a task or renames the selected one, ⌘Return star
 
 Click a session for where it stands, your last prompt, and buttons to open its tab, reply by voice, read it aloud, or stop it. Its **Chat** tab shows the conversation and lets you write to it without leaving the companion (see [Chat](#chat)). When the window isn't in front, the companion folds into the notch (or a pill under the menu bar on screens without one); click it for the list. When a session finishes or needs you, the notice drops out of the notch with **Open in Ghostty**: click it to jump to that tab. It shows up even when the companion is muted or "speak when a session finishes" is off.
 
-## Projects
+## Many sessions, many projects
 
-When your sessions run in more than one project, the window shows them as a graph instead of the orbit: Claude in the middle, a node for each project, and each project's sessions stacked beside its node. The project with the most urgent session comes first. On a wide window the projects go on both sides of Claude; on a narrower one all on its right; with the task list and a session's detail both open they stack, each project's sessions under it, and scroll if they don't fit. The list in the notch has a heading per project as well.
+<p>
+  <img src="screenshots/sidebar.png" width="600" alt="The sidebar layout: workspaces and projects on the left, one workspace's sessions on the right">
+  <img src="screenshots/graph.png" width="600" alt="The workspace graph: Claude, one workspace open with its projects and sessions, the others folded">
+</p>
 
-- **Click a project** for its folder: open it in Finder, in a new Ghostty tab, or in your editor (VS Code, Cursor, Zed, Sublime Text or Nova, whichever you have), start a session there, or copy its path. Right-click works too.
-- **The chevron** folds a project's sessions away, and back. A folded project still shows how each of its sessions stands, and turns orange when one needs you. Clicking a project's heading in the notch does the same; what you fold stays folded.
+The window picks its layout by how much is going on, and only changes it while you're not looking (as the window comes to the front, never under your eyes):
 
-A project is the git repo a session works in, so a worktree or a subfolder counts as its repo; a folder outside any repo is a project of its own. The folder button in the header switches between the graph and the orbit; it only shows up when there is something to group (two or more projects, one of them with more than one session).
+| | |
+| --- | --- |
+| **Orbit** | Up to 6 sessions: each one around the avatar. |
+| **Workspace graph** | 7 to 15 sessions in more than one place: Claude, then a node per workspace, its projects, and their sessions. |
+| **Sidebar** | 16 sessions or more, or 10 projects or more: every workspace and project in a tree on the left, the one you pick on the right. |
+
+The layout button in the header (or View in the menu bar, ⌃⌘0 – ⌃⌘3) pins one layout instead; **Automatic** goes back to choosing.
+
+**Workspaces** are the folders your projects sit in, as in Finder: `~/Projects/acme/acme-api` is the project **api** in the workspace **acme** (the workspace's name is dropped from the front of its projects' names). Code folders on the way there, like Documents, Projects, Code or Developer, are passed through, and so is a folder that only holds workspaces. If that guesses wrong, **Workspaces come from › Choose a code folder…** in the layout menu makes every folder in it a workspace. A project is the git repo a session works in, so a worktree or a subfolder counts as its repo; a session started in a workspace's own folder shows as `acme/`. Projects without a session are listed too: the ones Claude Code ran in before, and the other git repos in each workspace.
+
+- **The graph** is a canvas: scroll (or two fingers) to move around, pinch or ⌘-scroll to zoom, ⌘+ and ⌘− too, and the corner buttons fit everything in. It starts as big as fits, but never so small you can't read it. Click a workspace or project for its folder: Finder, a Ghostty tab, your editor (VS Code, Cursor, Zed, Sublime Text or Nova), a new session, pinning it. The chevron folds it; a folded workspace keeps the sessions that need you or failed beside it, and **Fold all the others** leaves one open.
+- **The sidebar** starts with **Needs you**, **Finished, not seen** and **All sessions**, then what you pinned, then every workspace with its projects (and the ones without sessions, a click away). Pick a workspace for its sessions by project, a project for its own; the ones without sessions are chips to start a session in or open. Right-click a workspace to pin it, or hide it while nothing runs in it.
+- **⌘K** finds any session, project or workspace by a few letters of each (“acme app”): Return opens the session's Ghostty tab or shows the project, ⌘Return shows the session here, and the last lines start a session in the project or open it in Ghostty.
+- **The notch**, with more than eight sessions, lists what needs you first and then one line per workspace with how its sessions stand; click one for its sessions.
+
+### Ghostty windows and tabs
+
+New sessions (and shells opened from a project) go into the Ghostty window that mostly holds their workspace's sessions; when there is none yet, into a new window. Tabs that are already open stay where they are: Ghostty can't move a tab to another window.
+
+Each session's tab is named after its project and title, like `✅ api · Release PR`. The icon in front is the one the tab had before (Claude Code's own, or ✅ ❌ ⏳ from a tab-status script), and ❗ while the session needs you; a tab without one gets an icon for its status. Tabs get their own titles back when the session ends, when the companion quits, or when you switch it off. **Sort the tabs by project** puts each window's tabs in order. All three are in the layout menu under Ghostty.
 
 ## Talking
 
@@ -125,7 +149,7 @@ Spoken audio is cached by text, so repeated announcements cost nothing. When few
 
 ## Setup
 
-The companion reads what Claude Code already writes: `~/.claude/sessions/` for which sessions are alive and busy, and each session's transcript for its title, last prompt, last answer and current tool. A session's project comes from the `.git` folder (or worktree file) above its folder, read from disk without running git. Ghostty's AppleScript dictionary tells it which tab holds which session (by tty) and lets it focus tabs, type and open new ones. Summaries and understanding what you said are quick `claude -p` calls with Haiku, on your normal Claude login, without tools, hooks or MCP servers.
+The companion reads what Claude Code already writes: `~/.claude/sessions/` for which sessions are alive and busy, and each session's transcript for its title, last prompt, last answer and current tool. A session's project comes from the `.git` folder (or worktree file) above its folder, read from disk without running git, and its workspace from the folders above that. Ghostty's AppleScript dictionary tells it which tab holds which session (by tty) and lets it focus tabs, type and open new ones. Summaries and understanding what you said are quick `claude -p` calls with Haiku, on your normal Claude login, without tools, hooks or MCP servers.
 
 To see when a session waits on you (a permission prompt, a question, a plan), `./scripts/install-hooks.sh` adds async hooks to `~/.claude/settings.json` that run `~/.claude/hooks/companion-hook.sh`. It backs up the settings first and is safe to run again; `--remove` takes the hooks out. Sessions that are already running may need a restart to pick them up.
 
@@ -143,6 +167,7 @@ swift build
 .build/debug/ClaudeCompanion --chat <transcript.jsonl>           # what the Chat tab shows for a transcript
 scripts/companion-say.sh "summarize everything"                  # act on text as if it were spoken
 COMPANION_DEMO=screenshots .build/debug/ClaudeCompanion          # made-up sessions: writes the screenshots, then quits
+COMPANION_DEMO=/tmp/shots COMPANION_DEMO_SET=large .build/debug/ClaudeCompanion   # 19 sessions in 6 workspaces: sidebar, graph, ⌘K, notch
 ```
 
 `Sources/TaskTrackerCore`, `TaskTrackerUI` and `MenuCLI` are Task Tracker, moved in from its repo; `TASKTRACKER_DATA=/tmp/tasks.json` points them at a test list.

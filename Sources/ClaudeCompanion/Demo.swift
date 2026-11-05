@@ -6,8 +6,33 @@ import TaskTrackerCore
 enum Demo {
     static let folder: URL? = ProcessInfo.processInfo.environment["COMPANION_DEMO"].map { URL(fileURLWithPath: $0) }
     static var on: Bool { folder != nil }
+    /// `COMPANION_DEMO_SET=large`: 19 sessions in 12 of 50 projects, in six workspaces.
+    static let large = ProcessInfo.processInfo.environment["COMPANION_DEMO_SET"] == "large"
+    /// `COMPANION_DEMO_LAYOUT=orbit|graph|sidebar` pins a layout for the screenshots.
+    static let layout: LayoutChoice? = ProcessInfo.processInfo.environment["COMPANION_DEMO_LAYOUT"].flatMap(LayoutChoice.init(rawValue:))
+
+    private static func ws(_ name: String) -> String { ("~/Projects/\(name)" as NSString).expandingTildeInPath }
+    static var pinned: [String] { large ? ["~/Projects/acme/acme-api", ws("lab")] : [] }
+    static var navOpen: Set<String> { large ? [ws("acme")] : [] }
+
+    /// The projects without sessions the large demo lists.
+    static func knownRepos() -> [String] {
+        guard large else { return [] }
+        let idle: [String: [String]] = [
+            "acme": ["admin", "auth", "billing", "cli", "design", "docs", "infra", "mail", "search"],
+            "globex": ["analytics", "app", "newsletter", "intranet", "tracking"],
+            "lab": ["ez-rec", "magazine", "oyster", "testing-sdk", "trackpad-scale", "flow", "blast-test"],
+            "personal": ["notes", "scripts"],
+            "initech": ["portal", "app", "api", "reports", "billing", "crm", "docs", "etl", "infra", "mobile", "sso"],
+            "oss": ["swift-format", "homebrew-tap", "ghostty-themes", "zed-extensions"],
+        ]
+        return idle.sorted { $0.key < $1.key }.flatMap { ws, names in
+            names.map { n in "~/Projects/\(ws)/" + (["lab", "personal", "oss"].contains(ws) ? n : "\(ws)-\(n)") }
+        }
+    }
 
     static func sessions() -> [Session] {
+        if large { return largeSessions() }
         let now = Date()
         func ago(_ minutes: Double) -> Date { now.addingTimeInterval(-minutes * 60) }
         var list: [Session] = []
@@ -52,6 +77,43 @@ enum Demo {
 }
 
 extension Demo {
+    /// 19 sessions in 12 projects across four workspaces, for the sidebar and graph screenshots.
+    static func largeSessions() -> [Session] {
+        let now = Date()
+        var list: [Session] = []
+        func add(_ path: String, _ title: String, _ status: SessionStatus, _ minutes: Double,
+                 needs: String? = nil, activity: String? = nil) {
+            let n = list.count + 1
+            var s = Session(id: "demo-\(n)", pid: Int32(n), cwd: "~/Projects/" + path, title: title,
+                            status: status, since: now.addingTimeInterval(-minutes * 60), tty: nil)
+            s.tabIndex = n
+            s.needsDetail = needs
+            s.activity = activity
+            if status == .done || status == .failed { s.outcomeAt = s.since }
+            list.append(s)
+        }
+        add("acme/acme-api", "Release PR for Thursday", .needs, 2, needs: "Asks to run gh pr create --base main")
+        add("acme/acme-api", "N+1 query in /projects", .working, 7, activity: "Editing projects_controller.rb")
+        add("acme/acme-api", "Sprint board fields via GraphQL", .done, 11)
+        add("acme/acme-app", "Push notifications on iOS", .needs, 4, needs: "Asks to edit AppDelegate.swift")
+        add("acme/acme-app", "Offline cache for projects", .working, 15, activity: "Reading ProjectStore.ts")
+        add("acme/acme-fleet", "Session cards v2", .working, 3, activity: "Editing SessionCard.vue")
+        add("acme/acme-fleet", "Fleet UI cleanup", .idle, 40)
+        add("acme/acme-frontend", "Filter in the project dashboard", .done, 25)
+        add("acme/acme-frontend", "Dark mode tokens", .working, 9, activity: "Editing tokens.css")
+        add("acme/acme-logbook", "Release entry", .idle, 55)
+        add("globex/globex-portal", "Login with Azure AD", .needs, 6, needs: "Has a question for you")
+        add("globex/globex-cms", "Import old articles", .failed, 8)
+        add("globex/globex-web", "Replace the hero slider", .working, 12, activity: "Editing Hero.tsx")
+        add("globex/globex-web", "Lighthouse under 90", .shell, 5)
+        add("globex/globex-shop", "Shipping costs for Switzerland", .done, 14)
+        add("lab/claude-hub", "Workspaces in the sidebar", .working, 20, activity: "Editing Sidebar.swift")
+        add("lab/claude-hub", "Notch pill polish", .idle, 70)
+        add("lab/task-tracker", "Reminders via iCloud", .done, 31)
+        add("personal/dotfiles", "Zsh prompt cleanup", .idle, 90)
+        return list
+    }
+
     /// Writes sample tasks and a sample menu with Task Tracker's own code into a temp folder and
     /// points TASKTRACKER_DATA at it, so the demo never touches the real list.
     @MainActor
